@@ -101,15 +101,23 @@ func toFloat(row []any, idx int) float64 {
 }
 
 // toUint64 safely converts a cell value to uint64.
+// OpenObserve returns JSON numbers as float64, so we must handle that type.
 func toUint64(row []any, idx int) uint64 {
 	if idx < 0 || idx >= len(row) || row[idx] == nil {
 		return 0
 	}
-	v, ok := row[idx].(uint64)
-	if !ok {
+	switch v := row[idx].(type) {
+	case uint64:
+		return v
+	case float64:
+		return uint64(v)
+	case int64:
+		return uint64(v)
+	case int:
+		return uint64(v)
+	default:
 		return 0
 	}
-	return v
 }
 
 // applyOpsToItems sets topLevelOps for matching service names.

@@ -159,7 +159,7 @@ func buildListLogsJSONIndexesQuery(cluster string, filters ...string) (string, [
 func (t *telemetryMetaStore) ListLogsJSONIndexes(ctx context.Context, filters ...string) ([]telemetrytypes.TelemetryFieldKeySkipIndex, error) {
 	ctx = withTelemetryContext(ctx, "ListLogsJSONIndexes")
 	query, args := buildListLogsJSONIndexesQuery(t.telemetrystore.Cluster(), filters...)
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WrapInternalf(err, CodeFailLoadLogsJSONIndexes, "failed to load string indexed columns")
 	}
@@ -255,7 +255,7 @@ func (t *telemetryMetaStore) ListJSONValues(ctx context.Context, path string, li
 	contextWithTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := t.telemetrystore.ClickhouseDB().Query(contextWithTimeout, query, args...)
+	rows, err := t.telemetrystore.DB().Query(contextWithTimeout, query, args...)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, false, errors.WrapTimeoutf(err, errors.CodeTimeout, "query timed out").WithAdditional("failed to list JSON values")
@@ -265,7 +265,7 @@ func (t *telemetryMetaStore) ListJSONValues(ctx context.Context, path string, li
 	defer rows.Close()
 
 	// Get column types to determine proper scan types
-	colTypes := rows.ColumnTypes()
+	colTypes, _ := rows.ColumnTypes()
 	scanTargets := make([]any, len(colTypes))
 	for i := range colTypes {
 		scanTargets[i] = reflect.New(colTypes[i].ScanType()).Interface()
@@ -382,7 +382,7 @@ func (t *telemetryMetaStore) IsPathPromoted(ctx context.Context, path string) (b
 	split := strings.Split(path, telemetrytypes.ArraySep)
 	pathSegment := split[0]
 	query := fmt.Sprintf("SELECT 1 FROM %s.%s WHERE signal = ? AND column_name = ? AND field_context = ? AND field_name = ? LIMIT 1", DBName, PromotedPathsTableName)
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, telemetrytypes.SignalLogs, logstelemetryschema.LogsV2BodyPromotedColumn, telemetrytypes.FieldContextBody, pathSegment)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, telemetrytypes.SignalLogs, logstelemetryschema.LogsV2BodyPromotedColumn, telemetrytypes.FieldContextBody, pathSegment)
 	if err != nil {
 		return false, errors.WrapInternalf(err, CodeFailCheckPathPromoted, "failed to check if path %s is promoted", path)
 	}
@@ -412,7 +412,7 @@ func (t *telemetryMetaStore) GetPromotedPaths(ctx context.Context, paths ...stri
 	sb.Where(sb.And(conditions...))
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WrapInternalf(err, CodeFailCheckPathPromoted, "failed to get promoted paths")
 	}
@@ -441,7 +441,7 @@ func CleanPathPrefixes(path string) string {
 // PromotePaths inserts promoted paths into the Column Evolution table (same schema as signoz-otel-collector metadata_migrations).
 func (t *telemetryMetaStore) PromotePaths(ctx context.Context, paths ...string) error {
 	ctx = withTelemetryContext(ctx, "PromotePaths")
-	batch, err := t.telemetrystore.ClickhouseDB().PrepareBatch(ctx,
+	batch, err := t.telemetrystore.DB().PrepareBatch(ctx,
 		fmt.Sprintf("INSERT INTO %s.%s (signal, column_name, column_type, field_context, field_name, version, release_time) VALUES", DBName,
 			PromotedPathsTableName))
 	if err != nil {

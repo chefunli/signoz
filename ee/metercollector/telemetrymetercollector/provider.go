@@ -71,7 +71,7 @@ func (provider *Provider) Origin(ctx context.Context, _ valuer.UUID, _ *licenset
 	query, args := buildOriginQuery(provider.config.Name.String())
 
 	var minMs int64
-	if err := provider.telemetryStore.ClickhouseDB().QueryRow(ctx, query, args...).Scan(&minMs); err != nil {
+	if err := provider.telemetryStore.DB().QueryRow(ctx, query, args...).Scan(&minMs); err != nil {
 		return time.Time{}, err
 	}
 	if minMs == 0 {
@@ -111,7 +111,7 @@ func (provider *Provider) Collect(
 			return nil, err
 		}
 
-		rows, err := provider.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+		rows, err := provider.telemetryStore.DB().Query(ctx, query, args...)
 		if err != nil {
 			return nil, err
 		}

@@ -13,4 +13,5 @@ func TestNew(t *testing.T) {
 	assert.NotNil(t, provider)
 	assert.NotNil(t, provider.Mock())
 	assert.NotNil(t, provider.ClickhouseDB())
+	assert.NotNil(t, provider.DB())
 }

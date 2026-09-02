@@ -58,7 +58,7 @@ func (s *store) AddRuleStateHistory(ctx context.Context, entries []rulestatehist
 	)
 	insertQuery, _ := ib.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	statement, err := s.telemetryStore.ClickhouseDB().PrepareBatch(
+	statement, err := s.telemetryStore.DB().PrepareBatch(
 		ctx,
 		insertQuery,
 	)
@@ -97,7 +97,7 @@ func (s *store) GetLastSavedRuleStateHistory(ctx context.Context, ruleID string)
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 	history := make([]rulestatehistorytypes.RuleStateHistory, 0)
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &history, query, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &history, query, args...); err != nil {
 		return nil, err
 	}
 	return history, nil
@@ -135,7 +135,7 @@ func (s *store) ReadRuleStateHistoryByRuleID(ctx context.Context, orgID valuer.U
 	selectQuery, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	history := []rulestatehistorytypes.RuleStateHistory{}
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &history, selectQuery, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &history, selectQuery, args...); err != nil {
 		return nil, 0, err
 	}
 
@@ -149,7 +149,7 @@ func (s *store) ReadRuleStateHistoryByRuleID(ctx context.Context, orgID valuer.U
 
 	var total uint64
 	countQuery, countArgs := countSB.BuildWithFlavor(sqlbuilder.ClickHouse)
-	if err := s.telemetryStore.ClickhouseDB().QueryRow(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+	if err := s.telemetryStore.DB().QueryRow(ctx, countQuery, countArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -185,7 +185,7 @@ func (s *store) ReadRuleStateHistoryFilterKeysByRuleID(ctx context.Context, orgI
 	sb.Limit(int(limit + 1))
 	selectQuery, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := s.telemetryStore.ClickhouseDB().Query(ctx, selectQuery, args...)
+	rows, err := s.telemetryStore.DB().Query(ctx, selectQuery, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +257,7 @@ func (s *store) ReadRuleStateHistoryFilterValuesByRuleID(ctx context.Context, or
 	sb.Limit(int(limit + 1))
 	selectQuery, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := s.telemetryStore.ClickhouseDB().Query(ctx, selectQuery, args...)
+	rows, err := s.telemetryStore.DB().Query(ctx, selectQuery, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +320,7 @@ func (s *store) ReadRuleStateHistoryTopContributorsByRuleID(ctx context.Context,
 	selectQuery, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	contributors := []rulestatehistorytypes.RuleStateHistoryContributor{}
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &contributors, selectQuery, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &contributors, selectQuery, args...); err != nil {
 		return nil, err
 	}
 	return contributors, nil
@@ -373,7 +373,7 @@ GROUP BY unix_milli`,
 	args = append(args, outerArgs...)
 
 	windows := []rulestatehistorytypes.GettableRuleStateWindow{}
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &windows, selectQuery, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &windows, selectQuery, args...); err != nil {
 		return nil, err
 	}
 
@@ -387,7 +387,7 @@ func (s *store) GetAvgResolutionTime(ctx context.Context, ruleID string, query *
 	selectQuery, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var avg float64
-	if err := s.telemetryStore.ClickhouseDB().QueryRow(ctx, selectQuery, args...).Scan(&avg); err != nil {
+	if err := s.telemetryStore.DB().QueryRow(ctx, selectQuery, args...).Scan(&avg); err != nil {
 		return 0, err
 	}
 	return avg, nil
@@ -419,7 +419,7 @@ func (s *store) GetTotalTriggers(ctx context.Context, ruleID string, query *rule
 	selectQuery, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var total uint64
-	if err := s.telemetryStore.ClickhouseDB().QueryRow(ctx, selectQuery, args...).Scan(&total); err != nil {
+	if err := s.telemetryStore.DB().QueryRow(ctx, selectQuery, args...).Scan(&total); err != nil {
 		return 0, err
 	}
 	return total, nil
@@ -445,7 +445,7 @@ func (s *store) GetTriggersByInterval(ctx context.Context, ruleID string, query 
 }
 
 func (s *store) querySeries(ctx context.Context, selectQuery string, args ...any) (*qbtypes.TimeSeries, error) {
-	rows, err := s.telemetryStore.ClickhouseDB().Query(ctx, selectQuery, args...)
+	rows, err := s.telemetryStore.DB().Query(ctx, selectQuery, args...)
 	if err != nil {
 		return nil, err
 	}

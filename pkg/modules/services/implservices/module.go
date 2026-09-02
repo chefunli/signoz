@@ -38,7 +38,7 @@ func NewModule(q querier.Querier, ts telemetrystore.TelemetryStore) services.Mod
 func (m *module) FetchTopLevelOperations(ctx context.Context, start time.Time, services []string) (map[string][]string, error) {
 	ctx = m.withServicesContext(ctx, "FetchTopLevelOperations")
 
-	db := m.TelemetryStore.ClickhouseDB()
+	db := m.TelemetryStore.DB()
 	query := fmt.Sprintf("SELECT name, serviceName, max(time) as ts FROM %s.%s WHERE time >= @start", tracestelemetryschema.DBName, tracestelemetryschema.TopLevelOperationsTableName)
 	args := []any{clickhouse.Named("start", start)}
 	if len(services) > 0 {
@@ -240,7 +240,9 @@ func (m *module) mapQueryRangeRespToServices(resp *qbtypes.QueryRangeResponse, s
 	for i, c := range sd.Columns {
 		switch c.Type {
 		case qbtypes.ColumnTypeGroup:
-			if c.Name == "service.name" {
+			// Match both "service.name" (ClickHouse) and "service_name" (OpenObserve
+			// replaces dots with underscores in column aliases)
+			if c.Name == "service.name" || c.Name == "service_name" {
 				serviceNameRespIndex = i
 			}
 		case qbtypes.ColumnTypeAggregation:

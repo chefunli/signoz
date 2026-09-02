@@ -52,7 +52,7 @@ func (s *traceStore) GetTraceSummary(ctx context.Context, traceID string) (*span
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var summary spantypes.TraceSummary
-	err := s.telemetryStore.ClickhouseDB().QueryRow(ctx, query, args...).Scan(
+	err := s.telemetryStore.DB().QueryRow(ctx, query, args...).Scan(
 		&summary.TraceID, &summary.Start, &summary.End, &summary.NumSpans,
 	)
 	if err != nil {
@@ -81,7 +81,7 @@ func (s *traceStore) GetTraceSpans(ctx context.Context, traceID string, summary 
 		spantypes.TraceDB, spantypes.TraceTable,
 	)
 	var spanItems []spantypes.StorableSpan
-	err := s.telemetryStore.ClickhouseDB().Select(
+	err := s.telemetryStore.DB().Select(
 		ctx, &spanItems, query,
 		traceID,
 		summary.Start.Unix()-1800,
@@ -111,7 +111,7 @@ func (s *traceStore) GetMinimalSpans(ctx context.Context, traceID string, start,
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var spans []spantypes.MinimalSpan
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &spans, query, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &spans, query, args...); err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "error querying minimal spans")
 	}
 	return spans, nil
@@ -148,7 +148,7 @@ func (s *traceStore) GetTraceSpansByIDs(ctx context.Context, traceID string, sta
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var spans []spantypes.StorableSpan
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &spans, query, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &spans, query, args...); err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "error querying trace spans by IDs")
 	}
 	return spans, nil
@@ -189,7 +189,7 @@ func (s *traceStore) GetFlamegraphSpans(ctx context.Context, traceID string, sta
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var spans []spantypes.StorableSpan
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &spans, query, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &spans, query, args...); err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "error querying flamegraph spans")
 	}
 	return spans, nil
@@ -213,7 +213,7 @@ func (s *traceStore) GetSpanCountByField(ctx context.Context, traceID string, su
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var rows []spanCountRow
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &rows, query, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &rows, query, args...); err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "error querying span count by field")
 	}
 	result := make(map[string]uint64, len(rows))
@@ -267,7 +267,7 @@ func (s *traceStore) GetSpanDurationByField(ctx context.Context, traceID string,
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 	var rows []spanDurationRow
-	if err := s.telemetryStore.ClickhouseDB().Select(ctx, &rows, query, args...); err != nil {
+	if err := s.telemetryStore.DB().Select(ctx, &rows, query, args...); err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "error querying span duration by field")
 	}
 	result := make(map[string]uint64, len(rows))

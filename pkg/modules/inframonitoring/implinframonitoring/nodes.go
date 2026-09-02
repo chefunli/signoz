@@ -385,7 +385,7 @@ func (m *module) getPerGroupNodeConditionCounts(
 	finalSQL := querybuilder.CombineCTEs(cteFragments) + countNodesPerConditionSQL
 	finalArgs := querybuilder.PrependArgs([][]any{timeSeriesFPsArgs, latestConditionPerNodeArgs}, countArgs)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, finalSQL, finalArgs...)
+	rows, err := m.telemetryStore.DB().Query(ctx, finalSQL, finalArgs...)
 	if err != nil {
 		return nil, err
 	}

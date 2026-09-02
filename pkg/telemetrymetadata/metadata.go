@@ -134,14 +134,17 @@ func (t *telemetryMetaStore) tracesTblStatementToFieldKeys(ctx context.Context) 
 	})
 	query := fmt.Sprintf("SHOW CREATE TABLE %s.%s", t.tracesDBName, t.indexV3TblName)
 	statements := []telemetrytypes.ShowCreateTableStatement{}
-	err := t.telemetrystore.ClickhouseDB().Select(ctx, &statements, query)
+	err := t.telemetrystore.DB().Select(ctx, &statements, query)
 	if err != nil {
 		return nil, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetTblStatement.Error())
 	}
 
 	materialisedKeys, err := ExtractFieldKeysFromTblStatement(statements[0].Statement)
 	if err != nil {
-		return nil, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetTracesKeys.Error())
+		// When using non-ClickHouse backends (e.g. OpenObserve), the synthetic
+		// CREATE TABLE statement may not be parseable by the ClickHouse DDL parser.
+		// Return empty materialized keys so the rest of getTracesKeys can continue.
+		materialisedKeys = []*telemetrytypes.TelemetryFieldKey{}
 	}
 
 	for idx := range materialisedKeys {
@@ -243,7 +246,7 @@ func (t *telemetryMetaStore) getTracesKeys(ctx context.Context, fieldKeySelector
 
 	query, args := mainSb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetTracesKeys.Error())
 	}
@@ -341,14 +344,17 @@ func (t *telemetryMetaStore) logsTblStatementToFieldKeys(ctx context.Context) ([
 	})
 	query := fmt.Sprintf("SHOW CREATE TABLE %s.%s", t.logsDBName, t.logsV2TblName)
 	statements := []telemetrytypes.ShowCreateTableStatement{}
-	err := t.telemetrystore.ClickhouseDB().Select(ctx, &statements, query)
+	err := t.telemetrystore.DB().Select(ctx, &statements, query)
 	if err != nil {
 		return nil, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetTblStatement.Error())
 	}
 
 	materialisedKeys, err := ExtractFieldKeysFromTblStatement(statements[0].Statement)
 	if err != nil {
-		return nil, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetLogsKeys.Error())
+		// When using non-ClickHouse backends (e.g. OpenObserve), the synthetic
+		// CREATE TABLE statement may not be parseable by the ClickHouse DDL parser.
+		// Return empty materialized keys so the rest of getLogsKeys can continue.
+		materialisedKeys = []*telemetrytypes.TelemetryFieldKey{}
 	}
 
 	for idx := range materialisedKeys {
@@ -566,7 +572,7 @@ func (t *telemetryMetaStore) getLogsKeys(ctx context.Context, orgID valuer.UUID,
 		LIMIT %d
 	`, strings.Join(queries, " UNION ALL "), limit+1)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, mainQuery, allArgs...)
+	rows, err := t.telemetrystore.DB().Query(ctx, mainQuery, allArgs...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetLogsKeys.Error())
 	}
@@ -688,14 +694,17 @@ func (t *telemetryMetaStore) auditTblStatementToFieldKeys(ctx context.Context) (
 
 	query := fmt.Sprintf("SHOW CREATE TABLE %s.%s", t.auditDBName, t.auditLogsTblName)
 	statements := []telemetrytypes.ShowCreateTableStatement{}
-	err := t.telemetrystore.ClickhouseDB().Select(ctx, &statements, query)
+	err := t.telemetrystore.DB().Select(ctx, &statements, query)
 	if err != nil {
 		return nil, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetTblStatement.Error())
 	}
 
 	materialisedKeys, err := ExtractFieldKeysFromTblStatement(statements[0].Statement)
 	if err != nil {
-		return nil, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetAuditKeys.Error())
+		// When using non-ClickHouse backends (e.g. OpenObserve), the synthetic
+		// CREATE TABLE statement may not be parseable by the ClickHouse DDL parser.
+		// Return empty materialized keys so the rest of getAuditKeys can continue.
+		materialisedKeys = []*telemetrytypes.TelemetryFieldKey{}
 	}
 
 	for idx := range materialisedKeys {
@@ -828,7 +837,7 @@ func (t *telemetryMetaStore) getAuditKeys(ctx context.Context, fieldKeySelectors
 		LIMIT %d
 	`, strings.Join(queries, " UNION ALL "), limit+1)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, mainQuery, allArgs...)
+	rows, err := t.telemetrystore.DB().Query(ctx, mainQuery, allArgs...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetAuditKeys.Error())
 	}
@@ -986,7 +995,7 @@ func (t *telemetryMetaStore) getMetricsKeys(ctx context.Context, fieldKeySelecto
 
 	query, args := mainSb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetMetricsKeys.Error())
 	}
@@ -1071,7 +1080,7 @@ func (t *telemetryMetaStore) getMeterSourceMetricKeys(ctx context.Context, field
 	sb.Limit(limit)
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetMeterKeys.Error())
 	}
@@ -1466,7 +1475,7 @@ func (t *telemetryMetaStore) getRelatedValues(ctx context.Context, orgID valuer.
 
 	t.logger.DebugContext(ctx, "query for related values", slog.String("query", query), slog.Any("args", args))
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, ErrFailedToGetRelatedValues
 	}
@@ -1549,7 +1558,7 @@ func (t *telemetryMetaStore) getSpanFieldValues(ctx context.Context, fieldValueS
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetLogsKeys.Error())
 	}
@@ -1637,7 +1646,7 @@ func (t *telemetryMetaStore) getLogFieldValues(ctx context.Context, fieldValueSe
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetLogsKeys.Error())
 	}
@@ -1724,7 +1733,7 @@ func (t *telemetryMetaStore) getAuditFieldValues(ctx context.Context, fieldValue
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetAuditKeys.Error())
 	}
@@ -1841,7 +1850,7 @@ func (t *telemetryMetaStore) getMetricFieldValues(ctx context.Context, orgID val
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetMetricsKeys.Error())
 	}
@@ -1979,7 +1988,7 @@ func (t *telemetryMetaStore) getIntrinsicMetricFieldValuesForTable(ctx context.C
 	sb.Limit(limit + 1)
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetMetricsKeys.Error())
 	}
@@ -2040,7 +2049,7 @@ func (t *telemetryMetaStore) getMeterSourceMetricFieldValues(ctx context.Context
 	sb.Limit(limit + 1)
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, errors.Wrap(err, errors.TypeInternal, errors.CodeInternal, ErrFailedToGetMeterValues.Error())
 	}
@@ -2331,7 +2340,7 @@ func (t *telemetryMetaStore) fetchTemporalityTypeForTable(ctx context.Context, t
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 	t.logger.DebugContext(ctx, "fetching metric temporality", slog.String("query", query), slog.Any("args", args))
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, errors.TypeInternal, errors.CodeInternal, "failed to fetch metric temporality")
 	}
@@ -2384,7 +2393,7 @@ func (t *telemetryMetaStore) fetchMeterSourceMetricsTemporalityAndType(ctx conte
 
 	t.logger.DebugContext(ctx, "fetching meter metrics temporality", slog.String("query", query), slog.Any("args", args))
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, errors.TypeInternal, errors.CodeInternal, "failed to fetch meter metric temporality")
 	}
@@ -2432,7 +2441,7 @@ func (k *telemetryMetaStore) fetchEvolutionEntryFromClickHouse(ctx context.Conte
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var entries []*telemetrytypes.EvolutionEntry
-	rows, err := k.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := k.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2571,7 +2580,7 @@ func (t *telemetryMetaStore) GetFirstSeenFromMetricMetadata(ctx context.Context,
 
 		query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-		rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+		rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 		if err != nil {
 			return nil, errors.Wrapf(err, errors.TypeInternal, errors.CodeInternal, "failed to query metadata for first_seen")
 		}
@@ -2634,7 +2643,7 @@ func (t *telemetryMetaStore) fetchLastSeenInfoForTable(ctx context.Context, tabl
 
 	t.logger.DebugContext(ctx, "fetching metric last seen timestamp", slog.String("query", query), slog.Any("args", args))
 
-	rows, err := t.telemetrystore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := t.telemetrystore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.Wrapf(err, errors.TypeInternal, errors.CodeInternal, "failed to fetch metric last seen info")
 	}

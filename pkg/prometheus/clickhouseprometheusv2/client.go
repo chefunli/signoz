@@ -54,7 +54,7 @@ func (c *client) withContext(ctx context.Context, functionName string) context.C
 
 func (c *client) selectSeries(ctx context.Context, query string, args []any) (*seriesLookup, error) {
 	ctx = c.withContext(ctx, "selectSeries")
-	rows, err := c.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := c.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func unmarshalLabels(s string) (labels.Labels, error) {
 // the engine as-is over the same dirty data.
 func (c *client) selectSamples(ctx context.Context, query string, args []any, lookup *seriesLookup) ([]*series, error) {
 	ctx = c.withContext(ctx, "selectSamples")
-	rows, err := c.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := c.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

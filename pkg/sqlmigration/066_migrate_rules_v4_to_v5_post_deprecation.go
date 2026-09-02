@@ -55,7 +55,7 @@ func (migration *migrateRulesV4ToV5) getLogDuplicateKeys(ctx context.Context) ([
 		ORDER BY name
 	`
 
-	rows, err := migration.telemetryStore.ClickhouseDB().Query(ctx, query)
+	rows, err := migration.telemetryStore.DB().Query(ctx, query)
 	if err != nil {
 		migration.logger.WarnContext(ctx, "failed to query log duplicate keys", errors.Attr(err))
 		return nil, nil
@@ -85,7 +85,7 @@ func (migration *migrateRulesV4ToV5) getTraceDuplicateKeys(ctx context.Context) 
 		ORDER BY tagKey
 	`
 
-	rows, err := migration.telemetryStore.ClickhouseDB().Query(ctx, query)
+	rows, err := migration.telemetryStore.DB().Query(ctx, query)
 	if err != nil {
 		migration.logger.WarnContext(ctx, "failed to query trace duplicate keys", errors.Attr(err))
 		return nil, nil

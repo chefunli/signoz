@@ -187,7 +187,7 @@ func seriesLookupQuery(query *prompb.Query, subQuery bool) (*sqlbuilder.SelectBu
 
 func (client *client) getFingerprintsFromClickhouseQuery(ctx context.Context, query string, args []any) (map[uint64][]prompb.Label, []string, error) {
 	ctx = client.withClickhousePrometheusContext(ctx, "getFingerprintsFromClickhouseQuery")
-	rows, err := client.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := client.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -261,7 +261,7 @@ func buildSamplesQuery(start int64, end int64, metricNames []string, sub *sqlbui
 func (client *client) querySamples(ctx context.Context, query string, args []any, fingerprints map[uint64][]prompb.Label) ([]*prompb.TimeSeries, error) {
 	ctx = client.withClickhousePrometheusContext(ctx, "querySamples")
 
-	rows, err := client.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := client.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -459,13 +459,13 @@ func mergeSamples(group []*prompb.TimeSeries) *prompb.TimeSeries {
 func (client *client) queryRaw(ctx context.Context, query string, ts int64) (*prompb.QueryResult, error) {
 	ctx = client.withClickhousePrometheusContext(ctx, "queryRaw")
 
-	rows, err := client.telemetryStore.ClickhouseDB().Query(ctx, query)
+	rows, err := client.telemetryStore.DB().Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	columns := rows.Columns()
+	columns, _ := rows.Columns()
 	var res prompb.QueryResult
 	targets := make([]any, len(columns))
 	for i := range targets {

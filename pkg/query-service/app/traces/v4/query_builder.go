@@ -343,7 +343,8 @@ func buildTracesQuery(start, end, step int64, mq *v3.BuilderQuery, panelType v3.
 			}
 			selectLabels = getSelectLabels(mq.SelectColumns)
 			// add it to the select labels
-			queryNoOpTmpl := fmt.Sprintf("SELECT timestamp as timestamp_datetime, span_id as spanID, trace_id as traceID,%s ", selectLabels) + "from " + constants.SIGNOZ_TRACE_DBNAME + "." + constants.SIGNOZ_SPAN_INDEX_V3 + " where %s %s" + "%s"
+			// Always include essential trace fields for the list view display
+			queryNoOpTmpl := fmt.Sprintf("SELECT timestamp as timestamp_datetime, span_id as spanID, trace_id as traceID, resource_string_service$$name as serviceName, name, duration_nano, response_status_code, parent_span_id, has_error,%s ", selectLabels) + "from " + constants.SIGNOZ_TRACE_DBNAME + "." + constants.SIGNOZ_SPAN_INDEX_V3 + " where %s %s" + "%s"
 			query = fmt.Sprintf(queryNoOpTmpl, timeFilter, filterSubQuery, orderBy)
 		} else {
 			return "", fmt.Errorf("unsupported aggregate operator %s for panelType %s", mq.AggregateOperator, panelType)

@@ -511,7 +511,7 @@ func (m *module) getEarliestMetricTime(ctx context.Context, metricNames []string
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
 	var minFirstReported uint64
-	if err := m.telemetryStore.ClickhouseDB().QueryRow(ctx, query, args...).Scan(&minFirstReported); err != nil {
+	if err := m.telemetryStore.DB().QueryRow(ctx, query, args...).Scan(&minFirstReported); err != nil {
 		return 0, err
 	}
 
@@ -537,7 +537,7 @@ func (m *module) getMetricsExistence(ctx context.Context, metricNames []string) 
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := m.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +585,7 @@ func (m *module) getAttributesExistence(ctx context.Context, metricNames, attrNa
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := m.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -756,7 +756,7 @@ func (m *module) getMetadata(
 	outerQuery, _ := outerSB.BuildWithFlavor(sqlbuilder.ClickHouse)
 	// All ? params are in innerArgs; outer query introduces none of its own.
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, outerQuery, innerArgs...)
+	rows, err := m.telemetryStore.DB().Query(ctx, outerQuery, innerArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -951,7 +951,7 @@ func (m *module) getPerGroupDistinctCounts(
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := m.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

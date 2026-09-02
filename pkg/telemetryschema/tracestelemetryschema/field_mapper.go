@@ -216,6 +216,34 @@ func (m *fieldMapper) getColumn(
 		if col, ok := indexV3Columns[key.Name]; ok {
 			return []*schema.Column{col}, nil
 		}
+	case telemetrytypes.FieldContextUnspecified:
+		// When the context has been stripped (e.g. by adjustDuplicateKeys),
+		// try to resolve against known intrinsic and calculated field definitions
+		// before falling back to a direct column lookup.
+		if _, ok := IntrinsicFieldsDeprecated[key.Name]; ok {
+			if col, ok := indexV3Columns[oldToNew[key.Name]]; ok {
+				return []*schema.Column{col}, nil
+			}
+		}
+		if _, ok := CalculatedFieldsDeprecated[key.Name]; ok {
+			if col, ok := indexV3Columns[oldToNew[key.Name]]; ok {
+				return []*schema.Column{col}, nil
+			}
+		}
+		if _, ok := IntrinsicFields[key.Name]; ok {
+			if col, ok := indexV3Columns[key.Name]; ok {
+				return []*schema.Column{col}, nil
+			}
+		}
+		if _, ok := CalculatedFields[key.Name]; ok {
+			if col, ok := indexV3Columns[key.Name]; ok {
+				return []*schema.Column{col}, nil
+			}
+		}
+		// Final fallback: direct column name lookup
+		if col, ok := indexV3Columns[key.Name]; ok {
+			return []*schema.Column{col}, nil
+		}
 	}
 	return nil, qbtypes.ErrColumnNotFound
 }

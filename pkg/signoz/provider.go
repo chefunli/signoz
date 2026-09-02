@@ -62,6 +62,7 @@ import (
 	"github.com/SigNoz/signoz/pkg/statsreporter/noopstatsreporter"
 	"github.com/SigNoz/signoz/pkg/telemetrystore"
 	"github.com/SigNoz/signoz/pkg/telemetrystore/clickhousetelemetrystore"
+	"github.com/SigNoz/signoz/pkg/telemetrystore/openobservetelemetrystore"
 	"github.com/SigNoz/signoz/pkg/telemetrystore/telemetrystorehook"
 	"github.com/SigNoz/signoz/pkg/tokenizer"
 	"github.com/SigNoz/signoz/pkg/tokenizer/jwttokenizer"
@@ -257,6 +258,7 @@ func NewTelemetryStoreProviderFactories() factory.NamedMap[factory.ProviderFacto
 			telemetrystorehook.NewInstrumentationFactory(),
 			telemetrystorehook.NewSettingsFactory(),
 		),
+		openobservetelemetrystore.NewFactory(),
 	)
 }
 

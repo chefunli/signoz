@@ -10,7 +10,7 @@ import (
 
 	"log/slog"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/SigNoz/signoz/pkg/telemetrystore"
 	"github.com/go-co-op/gocron"
 	"github.com/google/uuid"
 
@@ -36,7 +36,7 @@ var (
 )
 
 type Manager struct {
-	clickhouseConn clickhouse.Conn
+	clickhouseConn telemetrystore.Conn
 
 	licenseService licensing.Licensing
 
@@ -49,7 +49,7 @@ type Manager struct {
 	flagger flagger.Flagger
 }
 
-func New(licenseService licensing.Licensing, clickhouseConn clickhouse.Conn, zeus zeus.Zeus, orgGetter organization.Getter, flagger flagger.Flagger) (*Manager, error) {
+func New(licenseService licensing.Licensing, clickhouseConn telemetrystore.Conn, zeus zeus.Zeus, orgGetter organization.Getter, flagger flagger.Flagger) (*Manager, error) {
 	m := &Manager{
 		clickhouseConn: clickhouseConn,
 		licenseService: licenseService,

@@ -150,7 +150,7 @@ func (q *querier) fetchSamples(ctx context.Context, start, end int64, matchers [
 
 func (q *querier) selectStrings(ctx context.Context, fn, query string, args []any) ([]string, error) {
 	ctx = q.client.withContext(ctx, fn)
-	rows, err := q.client.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := q.client.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

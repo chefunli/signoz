@@ -168,7 +168,7 @@ func (e *executor) executeUnit(ctx context.Context, unit *coreUnit, grid gridCon
 		return nil, err
 	}
 
-	rows, err := e.client.telemetryStore.ClickhouseDB().Query(e.client.withContext(ctx, "transpiledUnit"), query, args...)
+	rows, err := e.client.telemetryStore.DB().Query(e.client.withContext(ctx, "transpiledUnit"), query, args...)
 	if err != nil {
 		return nil, err
 	}

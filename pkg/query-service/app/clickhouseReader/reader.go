@@ -38,7 +38,6 @@ import (
 	"github.com/prometheus/prometheus/util/stats"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"github.com/SigNoz/signoz/pkg/cache"
 
@@ -124,7 +123,7 @@ var (
 
 // SpanWriter for reading spans from ClickHouse
 type ClickHouseReader struct {
-	db                      clickhouse.Conn
+	db                      telemetrystore.Conn
 	prometheus              prometheus.Prometheus
 	sqlDB                   sqlstore.SQLStore
 	TraceDB                 string
@@ -191,7 +190,7 @@ func NewReader(
 	traceLocalTableName := options.primary.TraceLocalTableNameV3
 
 	return &ClickHouseReader{
-		db:                       telemetryStore.ClickhouseDB(),
+		db:                       telemetryStore.DB(),
 		logger:                   logger,
 		prometheus:               prometheus,
 		sqlDB:                    sqlDB,
@@ -2923,8 +2922,8 @@ func (r *ClickHouseReader) QueryDashboardVars(ctx context.Context, query string)
 	}
 
 	var (
-		columnTypes = rows.ColumnTypes()
-		vars        = make([]interface{}, len(columnTypes))
+		columnTypes, _ = rows.ColumnTypes()
+		vars           = make([]interface{}, len(columnTypes))
 	)
 	for i := range columnTypes {
 		vars[i] = reflect.New(columnTypes[i].ScanType()).Interface()
@@ -3101,7 +3100,7 @@ func (r *ClickHouseReader) GetMetricAttributeKeys(ctx context.Context, orgID val
 	})
 	var query string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var response v3.FilterAttributeKeyResponse
 
 	reductionEnabled := r.fl.BooleanOrEmpty(ctx, flagger.FeatureEnableMetricsReduction, featuretypes.NewFlaggerEvaluationContext(orgID))
@@ -3147,7 +3146,7 @@ func (r *ClickHouseReader) GetMeterAttributeKeys(ctx context.Context, req *v3.Fi
 	})
 	var query string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var response v3.FilterAttributeKeyResponse
 
 	// skips the internal attributes i.e attributes starting with __
@@ -3188,7 +3187,7 @@ func (r *ClickHouseReader) GetMetricAttributeValues(ctx context.Context, orgID v
 	})
 	var query string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var attributeValues v3.FilterAttributeValueResponse
 
 	reductionEnabled := r.fl.BooleanOrEmpty(ctx, flagger.FeatureEnableMetricsReduction, featuretypes.NewFlaggerEvaluationContext(orgID))
@@ -3253,7 +3252,19 @@ func (r *ClickHouseReader) GetMetricMetadata(ctx context.Context, orgID valuer.U
 
 	metadata, ok := metadataMap[metricName]
 	if !ok {
-		return nil, fmt.Errorf("metric metadata not found: %s", metricName)
+		// Return sensible defaults instead of erroring — this is expected when
+		// the backing store (e.g. OpenObserve) does not maintain ClickHouse
+		// metric metadata tables.
+		r.logger.Warn("metric metadata not found, returning defaults", "metricName", metricName)
+		return &v3.MetricMetadataResponse{
+			Delta:       false,
+			Le:          nil,
+			Description: "",
+			Unit:        "",
+			Type:        "",
+			IsMonotonic: false,
+			Temporality: "",
+		}, nil
 	}
 
 	metricType = string(metadata.MetricType)
@@ -3450,7 +3461,7 @@ func (r *ClickHouseReader) GetLogAggregateAttributes(ctx context.Context, req *v
 	})
 	var query string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var response v3.AggregateAttributeResponse
 	var stringAllowed bool
 
@@ -3539,7 +3550,7 @@ func (r *ClickHouseReader) GetLogAttributeKeys(ctx context.Context, req *v3.Filt
 	})
 	var query string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var response v3.FilterAttributeKeyResponse
 
 	tagTypeFilter := `tag_type != 'logfield'`
@@ -3705,7 +3716,7 @@ func (r *ClickHouseReader) GetLogAttributeValues(ctx context.Context, req *v3.Fi
 	})
 	var err error
 	var filterValueColumn string
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var attributeValues v3.FilterAttributeValueResponse
 
 	// if dataType or tagType is not present return empty response
@@ -3956,7 +3967,7 @@ func readRow(vars []interface{}, columnNames []string, countOfNumberCols int) ([
 	return groupBy, groupAttributes, groupAttributesArray, nil
 }
 
-func readRowsForTimeSeriesResult(rows driver.Rows, vars []interface{}, columnNames []string, countOfNumberCols int) ([]*v3.Series, error) {
+func readRowsForTimeSeriesResult(rows telemetrystore.Rows, vars []interface{}, columnNames []string, countOfNumberCols int) ([]*v3.Series, error) {
 	// when groupBy is applied, each combination of cartesian product
 	// of attribute values is a separate series. Each item in seriesToPoints
 	// represent a unique series where the key is sorted attribute values joined
@@ -4054,9 +4065,9 @@ func (r *ClickHouseReader) GetTimeSeriesResultV3(ctx context.Context, query stri
 	defer rows.Close()
 
 	var (
-		columnTypes = rows.ColumnTypes()
-		columnNames = rows.Columns()
-		vars        = make([]interface{}, len(columnTypes))
+		columnTypes, _ = rows.ColumnTypes()
+		columnNames, _ = rows.Columns()
+		vars           = make([]interface{}, len(columnTypes))
 	)
 	var countOfNumberCols int
 
@@ -4097,8 +4108,8 @@ func (r *ClickHouseReader) GetListResultV3(ctx context.Context, query string) ([
 	defer rows.Close()
 
 	var (
-		columnTypes = rows.ColumnTypes()
-		columnNames = rows.Columns()
+		columnTypes, _ = rows.ColumnTypes()
+		columnNames, _ = rows.Columns()
 	)
 
 	var rowList []*v3.Row
@@ -4120,9 +4131,21 @@ func (r *ClickHouseReader) GetListResultV3(ctx context.Context, query string) ([
 					t = time.Unix(0, int64(*v))
 				case *time.Time:
 					t = *v
+				case *string:
+					// OpenObserve adapter may return timestamp as RFC3339 string
+					if parsed, err := time.Parse(time.RFC3339Nano, *v); err == nil {
+						t = parsed
+					}
 				}
 			} else if columnNames[idx] == "timestamp_datetime" {
-				t = *v.(*time.Time)
+				switch v := v.(type) {
+				case *time.Time:
+					t = *v
+				case *string:
+					if parsed, err := time.Parse(time.RFC3339Nano, *v); err == nil {
+						t = parsed
+					}
+				}
 			} else if columnNames[idx] == "events" {
 				var events []map[string]interface{}
 				eventsFromDB, ok := v.(*[]string)
@@ -4184,7 +4207,7 @@ func (r *ClickHouseReader) GetTraceAggregateAttributes(ctx context.Context, req 
 	})
 	var query string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var response v3.AggregateAttributeResponse
 	var stringAllowed bool
 
@@ -4282,7 +4305,7 @@ func (r *ClickHouseReader) GetTraceAttributeKeys(ctx context.Context, req *v3.Fi
 	})
 	var query string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var response v3.FilterAttributeKeyResponse
 
 	tagTypeFilter := `tag_type != 'spanfield'`
@@ -4356,7 +4379,7 @@ func (r *ClickHouseReader) GetTraceAttributeValues(ctx context.Context, req *v3.
 	var query string
 	var filterValueColumn string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	var attributeValues v3.FilterAttributeValueResponse
 
 	// if dataType or tagType is not present return empty response
@@ -4453,7 +4476,7 @@ func (r *ClickHouseReader) GetSpanAttributeKeysByNames(ctx context.Context, name
 	})
 	var query string
 	var err error
-	var rows driver.Rows
+	var rows telemetrystore.Rows
 	response := map[string]v3.AttributeKey{}
 
 	query = fmt.Sprintf("SELECT DISTINCT(tagKey), tagType, dataType FROM %s.%s where tagKey in ('%s')", r.TraceDB, r.spanAttributesKeysTable, strings.Join(names, "','"))
@@ -4503,7 +4526,7 @@ func (r *ClickHouseReader) AddRuleStateHistory(ctx context.Context, ruleStateHis
 		instrumentationtypes.CodeNamespace:    "clickhouse-reader",
 		instrumentationtypes.CodeFunctionName: "AddRuleStateHistory",
 	})
-	var statement driver.Batch
+	var statement telemetrystore.Batch
 	var err error
 
 	defer func() {

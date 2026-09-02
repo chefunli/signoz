@@ -72,7 +72,7 @@ func (c *clickhouse) Sync(ctx context.Context, metricName string, labels []strin
 	ib.Values(metricName, labels, matchType, effectiveFromMs, deleted, updatedAt)
 
 	query, args := ib.BuildWithFlavor(sqlbuilder.ClickHouse)
-	if err := c.telemetryStore.ClickhouseDB().Exec(ctx, query, args...); err != nil {
+	if err := c.telemetryStore.DB().Exec(ctx, query, args...); err != nil {
 		return errors.WrapInternalf(err, errors.CodeInternal, "failed to sync reduction rule to clickhouse")
 	}
 	return nil
@@ -93,7 +93,7 @@ func (c *clickhouse) AttributeKeys(ctx context.Context, metricName string, start
 	)
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := c.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := c.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "failed to fetch metric attribute keys")
 	}
@@ -140,7 +140,7 @@ func (c *clickhouse) EstimateCardinality(ctx context.Context, metricName string,
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 	var current, reduced uint64
-	if err := c.telemetryStore.ClickhouseDB().QueryRow(ctx, query, args...).Scan(&current, &reduced); err != nil {
+	if err := c.telemetryStore.DB().QueryRow(ctx, query, args...).Scan(&current, &reduced); err != nil {
 		return 0, 0, errors.WrapInternalf(err, errors.CodeInternal, "failed to estimate reduction impact")
 	}
 	if len(keptLabels) == 0 && current == 0 {
@@ -205,7 +205,7 @@ func (c *clickhouse) ingestedSeriesCount(ctx context.Context, metricNames []stri
 	sb.GroupBy("metric_name")
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := c.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := c.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "failed to count ingested series")
 	}
@@ -262,7 +262,7 @@ func (c *clickhouse) reducedSeriesCountForTable(ctx context.Context, table strin
 	sb.GroupBy("metric_name")
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := c.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := c.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "failed to count reduced series")
 	}
@@ -329,7 +329,7 @@ func (c *clickhouse) RankByVolume(ctx context.Context, metricNames []string, eff
 	}
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := c.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := c.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "failed to rank reduction rules by volume")
 	}
@@ -394,7 +394,7 @@ func (c *clickhouse) countSamplesByMetric(ctx context.Context, table, countExpr 
 	sb.GroupBy("metric_name")
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := c.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := c.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "failed to count samples")
 	}
@@ -424,7 +424,7 @@ func (c *clickhouse) TotalVolume(ctx context.Context, startMs, endMs int64) (uin
 
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
 	var series, samples uint64
-	if err := c.telemetryStore.ClickhouseDB().QueryRow(ctx, query, args...).Scan(&series, &samples); err != nil {
+	if err := c.telemetryStore.DB().QueryRow(ctx, query, args...).Scan(&series, &samples); err != nil {
 		return 0, 0, errors.WrapInternalf(err, errors.CodeInternal, "failed to count total ingested volume")
 	}
 	return series, samples, nil
@@ -553,7 +553,7 @@ func mergeVolumePoints(ingested, reduced map[int64]uint64) []volumePoint {
 
 func (c *clickhouse) scanBuckets(ctx context.Context, sb *sqlbuilder.SelectBuilder) (map[int64]uint64, error) {
 	query, args := sb.BuildWithFlavor(sqlbuilder.ClickHouse)
-	rows, err := c.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
+	rows, err := c.telemetryStore.DB().Query(ctx, query, args...)
 	if err != nil {
 		return nil, errors.WrapInternalf(err, errors.CodeInternal, "failed to bucket series by time")
 	}

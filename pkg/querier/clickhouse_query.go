@@ -140,7 +140,7 @@ func (q *chSQLQuery) Execute(ctx context.Context) (*qbtypes.Result, error) {
 		return nil, err
 	}
 
-	rows, err := q.telemetryStore.ClickhouseDB().Query(ctx, query, q.args...)
+	rows, err := q.telemetryStore.DB().Query(ctx, query, q.args...)
 	if err != nil {
 		return nil, err
 	}

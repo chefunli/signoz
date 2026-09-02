@@ -565,7 +565,7 @@ func (m *module) getPerGroupContainerStatusCounts(
 		stateFpsArgs, containerStateArgs, reasonFpsArgs, reasonInnerArgs,
 	}, countArgs)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, finalSQL, finalArgs...)
+	rows, err := m.telemetryStore.DB().Query(ctx, finalSQL, finalArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -727,7 +727,7 @@ func (m *module) getPerGroupContainerRestartCounts(
 	finalSQL := querybuilder.CombineCTEs(cteFragments) + sumSQL
 	finalArgs := querybuilder.PrependArgs([][]any{restartFpsArgs, containerRestartsArgs}, nil)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, finalSQL, finalArgs...)
+	rows, err := m.telemetryStore.DB().Query(ctx, finalSQL, finalArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -874,7 +874,7 @@ func (m *module) getPerGroupContainerReadyCounts(
 	finalSQL := querybuilder.CombineCTEs(cteFragments) + countSQL
 	finalArgs := querybuilder.PrependArgs([][]any{readyFpsArgs, containerReadyArgs}, nil)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, finalSQL, finalArgs...)
+	rows, err := m.telemetryStore.DB().Query(ctx, finalSQL, finalArgs...)
 	if err != nil {
 		return nil, err
 	}

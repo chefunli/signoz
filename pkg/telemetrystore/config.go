@@ -15,6 +15,9 @@ type Config struct {
 
 	// Clickhouse is the clickhouse configuration
 	Clickhouse ClickhouseConfig `mapstructure:"clickhouse"`
+
+	// Openobserve is the openobserve configuration
+	Openobserve OpenobserveConfig `mapstructure:"openobserve"`
 }
 
 type ConnectionConfig struct {
@@ -47,6 +50,20 @@ type QuerySettings struct {
 	MaxResultRows                       int    `mapstructure:"max_result_rows"`
 	IgnoreDataSkippingIndices           string `mapstructure:"ignore_data_skipping_indices"`
 	SecondaryIndicesEnableBulkFiltering bool   `mapstructure:"secondary_indices_enable_bulk_filtering"`
+}
+
+type OpenobserveConfig struct {
+	// Endpoint is the OpenObserve API endpoint (e.g., http://localhost:5080).
+	Endpoint string `mapstructure:"endpoint"`
+
+	// OrgID is the OpenObserve organization ID.
+	OrgID string `mapstructure:"org_id"`
+
+	// Username for Basic Auth.
+	Username string `mapstructure:"username"`
+
+	// Password for Basic Auth.
+	Password string `mapstructure:"password"`
 }
 
 func NewConfigFactory() factory.ConfigFactory {

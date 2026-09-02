@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/SigNoz/signoz/pkg/errors"
+	"github.com/SigNoz/signoz/pkg/telemetrystore"
 	"github.com/SigNoz/signoz/pkg/types/telemetrystoretypes"
 )
 
@@ -35,7 +35,7 @@ type ExplainPlanIndex struct {
 }
 
 // RunExplainEstimate backs TelemetryStore.Estimate.
-func RunExplainEstimate(ctx context.Context, conn clickhouse.Conn, stmt string, args ...any) ([]telemetrystoretypes.EstimateEntry, error) {
+func RunExplainEstimate(ctx context.Context, conn telemetrystore.Conn, stmt string, args ...any) ([]telemetrystoretypes.EstimateEntry, error) {
 	if err := ValidateExplainStatement(stmt); err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func RunExplainEstimate(ctx context.Context, conn clickhouse.Conn, stmt string, 
 	}
 	defer rows.Close()
 
-	colTypes := rows.ColumnTypes()
+	colTypes, _ := rows.ColumnTypes()
 	var entries []telemetrystoretypes.EstimateEntry
 	for rows.Next() {
 		dest := make([]any, len(colTypes))
@@ -82,7 +82,7 @@ func RunExplainEstimate(ctx context.Context, conn clickhouse.Conn, stmt string, 
 
 // RunExplainPlan backs TelemetryStore.Plan, returning the driver error when stmt
 // does not parse or bind.
-func RunExplainPlan(ctx context.Context, conn clickhouse.Conn, stmt string, args ...any) error {
+func RunExplainPlan(ctx context.Context, conn telemetrystore.Conn, stmt string, args ...any) error {
 	if err := ValidateExplainStatement(stmt); err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func RunExplainPlan(ctx context.Context, conn clickhouse.Conn, stmt string, args
 
 // RunExplainIndexes backs TelemetryStore.Indexes, summing the breakdown
 // across every ReadFromMergeTree node.
-func RunExplainIndexes(ctx context.Context, conn clickhouse.Conn, stmt string, args ...any) (telemetrystoretypes.Granules, bool, error) {
+func RunExplainIndexes(ctx context.Context, conn telemetrystore.Conn, stmt string, args ...any) (telemetrystoretypes.Granules, bool, error) {
 	if err := ValidateExplainStatement(stmt); err != nil {
 		return telemetrystoretypes.Granules{}, false, err
 	}

@@ -166,18 +166,36 @@ func (b *traceQueryStatementBuilder) Build(
 
 	keys, _, err := b.metadataStore.GetKeysMulti(ctx, orgID, keySelectors)
 	if err != nil {
+		b.logger.ErrorContext(ctx, "trace builder: GetKeysMulti failed", slog.String("error", err.Error()))
 		return nil, err
 	}
+	b.logger.InfoContext(ctx, "trace builder: GetKeysMulti succeeded", slog.Int("keys_count", len(keys)))
 
 	for _, action := range adjustTraceKeys(keys, &query, requestType) {
 		b.logger.DebugContext(ctx, "key adjustment action", slog.String("action", action))
 	}
+
+	// Log expanded select fields for debugging
+	for i, f := range query.SelectFields {
+		b.logger.InfoContext(ctx, "trace builder: select field",
+			slog.Int("index", i),
+			slog.String("name", f.Name),
+			slog.String("context", f.FieldContext.StringValue()),
+			slog.String("data_type", f.FieldDataType.StringValue()),
+		)
+	}
+
 	// Create SQL builder
 	q := sqlbuilder.NewSelectBuilder()
 
+	var result *qbtypes.Statement
 	switch requestType {
 	case qbtypes.RequestTypeRaw:
-		return b.buildListQuery(ctx, orgID, q, query, start, end, keys, variables, isSelectFieldsEmpty)
+		result, err = b.buildListQuery(ctx, orgID, q, query, start, end, keys, variables, isSelectFieldsEmpty)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "trace builder: buildListQuery failed", slog.String("error", err.Error()))
+		}
+		return result, err
 	case qbtypes.RequestTypeTimeSeries:
 		return b.buildTimeSeriesQuery(ctx, orgID, q, query, start, end, keys, variables)
 	case qbtypes.RequestTypeScalar:
@@ -377,9 +395,19 @@ func (b *traceQueryStatementBuilder) buildListQuery(
 		cteArgs = append(cteArgs, args)
 	}
 
+	// Always include service.name for the list view display
+	serviceNameExpr := sqlbuilder.Escape("resource_string_service$$name")
+	sb.SelectMore(fmt.Sprintf("%s AS `%s`", serviceNameExpr, selectColumnAlias(len(query.SelectFields), "service.name")))
+
 	for i, field := range query.SelectFields {
 		expr, err := b.fm.ColumnExpressionFor(ctx, orgID, start, end, &field, telemetrytypes.FieldDataTypeUnspecified, keys)
 		if err != nil {
+			b.logger.ErrorContext(ctx, "buildListQuery: ColumnExpressionFor failed",
+				slog.Int("index", i),
+				slog.String("field_name", field.Name),
+				slog.String("field_context", field.FieldContext.StringValue()),
+				slog.String("error", err.Error()),
+			)
 			return nil, err
 		}
 		sb.SelectMore(fmt.Sprintf("%s AS `%s`", sqlbuilder.Escape(expr), selectColumnAlias(i, field.Name)))
@@ -955,6 +983,7 @@ func (b *traceQueryStatementBuilder) maybeAttachResourceFilter(
 		ctx, orgID, start, end, qbtypes.RequestTypeRaw, query, variables,
 	)
 	if err != nil {
+		b.logger.ErrorContext(ctx, "maybeAttachResourceFilter: resource filter Build failed", slog.String("error", err.Error()))
 		return "", nil, true, err
 	}
 	if stmt == nil {

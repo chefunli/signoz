@@ -624,7 +624,7 @@ func (m *module) getPerGroupPodStatusCounts(
 		containerReasonFpsArgs, containerInnerArgs,
 	}, countArgs)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, finalSQL, finalArgs...)
+	rows, err := m.telemetryStore.DB().Query(ctx, finalSQL, finalArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -793,7 +793,7 @@ func (m *module) getPerGroupPodRestartCounts(
 	finalSQL := querybuilder.CombineCTEs(cteFragments) + sumSQL
 	finalArgs := querybuilder.PrependArgs([][]any{restartFpsArgs, containerRestartsArgs}, nil)
 
-	rows, err := m.telemetryStore.ClickhouseDB().Query(ctx, finalSQL, finalArgs...)
+	rows, err := m.telemetryStore.DB().Query(ctx, finalSQL, finalArgs...)
 	if err != nil {
 		return nil, err
 	}

@@ -23,7 +23,7 @@ func (q *querier) Collect(ctx context.Context, _ valuer.UUID) (map[string]any, e
 		traces           uint64
 		tracesLastSeenAt time.Time
 	)
-	if err := q.telemetryStore.ClickhouseDB().QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*), max(timestamp) FROM %s", tracesTable)).Scan(&traces, &tracesLastSeenAt); err == nil {
+	if err := q.telemetryStore.DB().QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*), max(timestamp) FROM %s", tracesTable)).Scan(&traces, &tracesLastSeenAt); err == nil {
 		stats["telemetry.traces.count"] = traces
 		if tracesLastSeenAt.Unix() != 0 {
 			stats["telemetry.traces.last_observed.time"] = tracesLastSeenAt.UTC()
@@ -37,7 +37,7 @@ func (q *querier) Collect(ctx context.Context, _ valuer.UUID) (map[string]any, e
 		logs           uint64
 		logsLastSeenAt time.Time
 	)
-	if err := q.telemetryStore.ClickhouseDB().QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*), fromUnixTimestamp64Nano(max(timestamp)) FROM %s", logsTable)).Scan(&logs, &logsLastSeenAt); err == nil {
+	if err := q.telemetryStore.DB().QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*), fromUnixTimestamp64Nano(max(timestamp)) FROM %s", logsTable)).Scan(&logs, &logsLastSeenAt); err == nil {
 		stats["telemetry.logs.count"] = logs
 		if logsLastSeenAt.Unix() != 0 {
 			stats["telemetry.logs.last_observed.time"] = logsLastSeenAt.UTC()
@@ -51,7 +51,7 @@ func (q *querier) Collect(ctx context.Context, _ valuer.UUID) (map[string]any, e
 		metrics           uint64
 		metricsLastSeenAt time.Time
 	)
-	if err := q.telemetryStore.ClickhouseDB().QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*), toDateTime(max(unix_milli) / 1000) FROM %s", metricsTable)).Scan(&metrics, &metricsLastSeenAt); err == nil {
+	if err := q.telemetryStore.DB().QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*), toDateTime(max(unix_milli) / 1000) FROM %s", metricsTable)).Scan(&metrics, &metricsLastSeenAt); err == nil {
 		stats["telemetry.metrics.count"] = metrics
 		if metricsLastSeenAt.Unix() != 0 {
 			stats["telemetry.metrics.last_observed.time"] = metricsLastSeenAt.UTC()

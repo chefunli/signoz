@@ -144,16 +144,22 @@ func (p *provider) ClickhouseDB() clickhouse.Conn {
 	return p
 }
 
+// DB returns a connWrapper that adapts the underlying clickhouse.Conn
+// to the generic telemetrystore.Conn interface.
+func (p *provider) DB() telemetrystore.Conn {
+	return &connWrapper{conn: p.clickHouseConn}
+}
+
 func (p *provider) Estimate(ctx context.Context, stmt string, args ...any) ([]telemetrystoretypes.EstimateEntry, error) {
-	return RunExplainEstimate(ctx, p, stmt, args...)
+	return RunExplainEstimate(ctx, p.DB(), stmt, args...)
 }
 
 func (p *provider) Plan(ctx context.Context, stmt string, args ...any) error {
-	return RunExplainPlan(ctx, p, stmt, args...)
+	return RunExplainPlan(ctx, p.DB(), stmt, args...)
 }
 
 func (p *provider) Indexes(ctx context.Context, stmt string, args ...any) (telemetrystoretypes.Granules, bool, error) {
-	return RunExplainIndexes(ctx, p, stmt, args...)
+	return RunExplainIndexes(ctx, p.DB(), stmt, args...)
 }
 
 func (p *provider) Cluster() string {

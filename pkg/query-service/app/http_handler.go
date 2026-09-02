@@ -458,6 +458,9 @@ func (aH *APIHandler) RegisterRoutes(router *mux.Router, am *middleware.AuthZ) {
 
 	router.HandleFunc("/api/v1/register", am.OpenAccess(aH.registerUser)).Methods(http.MethodPost)
 
+	// OpenObserve-compatible login endpoint
+	router.HandleFunc("/auth/login", am.OpenAccess(aH.authLogin)).Methods(http.MethodPost)
+
 	router.HandleFunc("/api/v3/licenses", am.ViewAccess(func(rw http.ResponseWriter, req *http.Request) {
 		render.Success(rw, http.StatusOK, []any{})
 	})).Methods(http.MethodGet)
@@ -1576,6 +1579,68 @@ func (aH *APIHandler) registerUser(w http.ResponseWriter, r *http.Request) {
 	aH.SetupCompleted = true
 
 	aH.Respond(w, user)
+}
+
+// authLogin is an OpenObserve-compatible login endpoint.
+// It accepts {"name": "<email>", "password": "<password>"} and returns
+// {"status": true, "role": "admin"} on success, along with bearer tokens
+// in the response data so the frontend can use them for subsequent requests.
+func (aH *APIHandler) authLogin(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	var body struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		render.Error(w, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid request body"))
+		return
+	}
+
+	if body.Name == "" || body.Password == "" {
+		render.Error(w, errors.NewInvalidInputf(errors.CodeInvalidInput, "name and password are required"))
+		return
+	}
+
+	email, err := valuer.NewEmail(body.Name)
+	if err != nil {
+		render.Error(w, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid email: %s", err.Error()))
+		return
+	}
+
+	// Look up the default organization
+	org, err := aH.Signoz.Modules.OrgGetter.GetByName(ctx, "default")
+	if err != nil {
+		render.Error(w, err)
+		return
+	}
+
+	// Create a session using the SigNoz session module
+	token, err := aH.Signoz.Modules.Session.CreatePasswordAuthNSession(
+		ctx,
+		authtypes.AuthNProviderEmailPassword,
+		email,
+		body.Password,
+		org.ID,
+	)
+	if err != nil {
+		render.Error(w, err)
+		return
+	}
+
+	gettableToken := authtypes.NewGettableTokenFromToken(token, aH.Signoz.Modules.Session.GetRotationInterval(ctx))
+
+	// Return a response compatible with the OpenObserve login format
+	// while also including the bearer tokens for SigNoz auth.
+	render.Success(w, http.StatusOK, map[string]interface{}{
+		"status":       true,
+		"role":         "admin",
+		"tokenType":    gettableToken.TokenType,
+		"accessToken":  gettableToken.AccessToken,
+		"refreshToken": gettableToken.RefreshToken,
+		"expiresIn":    gettableToken.ExpiresIn,
+	})
 }
 
 func (aH *APIHandler) HandleError(w http.ResponseWriter, err error, statusCode int) bool {

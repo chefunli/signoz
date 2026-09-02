@@ -12,8 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2/lib/chcol"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/SigNoz/signoz/pkg/telemetrystore"
 	qbtypes "github.com/SigNoz/signoz/pkg/types/querybuildertypes/querybuildertypesv5"
 	"github.com/SigNoz/signoz/pkg/types/spantypes"
 	"github.com/SigNoz/signoz/pkg/types/telemetrystoretypes"
@@ -26,7 +25,8 @@ var (
 	// `__SELECT_KEY_<n>_` / `__GROUP_BY_KEY_<n>_`, which disambiguates select/group-by
 	// aliases from real table columns in the generated SQL. It is stripped here so the
 	// original field name surfaces as the label / column / raw-data key.
-	keyAliasRe = regexp.MustCompile(`^__(?:SELECT|GROUP_BY)_KEY_\d+_`)
+	// (?i) is needed because OpenObserve lowercases all SQL aliases in response keys.
+	keyAliasRe = regexp.MustCompile(`(?i)^__(?:SELECT|GROUP_BY)_KEY_\d+_`)
 	// legacyReservedColumnTargetAliases identifies result value from a user
 	// written clickhouse query. The column alias indcate which value is
 	// to be considered as final result (or target).
@@ -39,12 +39,10 @@ func stripKeyAlias(name string) string {
 	return keyAliasRe.ReplaceAllString(name, "")
 }
 
-// unwrapVariant returns the concrete value inside the chcol.Variant envelope the driver scans a
-// Dynamic column — a JSON path such as body_v2.level — into.
+// unwrapVariant returns the concrete value inside a Variant envelope.
+// With OpenObserve as the store, Dynamic column values arrive as plain types,
+// so this is effectively a pass-through.
 func unwrapVariant(val any) any {
-	if v, ok := val.(chcol.Variant); ok {
-		return v.Any()
-	}
 	return val
 }
 
@@ -72,7 +70,7 @@ func labelValue(val any) string {
 // * Scalar      - *qbtypes.ScalarData
 // * Raw         - *qbtypes.RawData
 // * Distribution- *qbtypes.DistributionData.
-func consume(rows driver.Rows, kind qbtypes.RequestType, queryWindow *qbtypes.TimeRange, step qbtypes.Step, queryName string) (any, error) {
+func consume(rows telemetrystore.Rows, kind qbtypes.RequestType, queryWindow *qbtypes.TimeRange, step qbtypes.Step, queryName string) (any, error) {
 	var (
 		payload any
 		err     error
@@ -91,9 +89,9 @@ func consume(rows driver.Rows, kind qbtypes.RequestType, queryWindow *qbtypes.Ti
 	return payload, err
 }
 
-func readAsTimeSeries(rows driver.Rows, queryWindow *qbtypes.TimeRange, step qbtypes.Step, queryName string) (*qbtypes.TimeSeriesData, error) {
-	colTypes := rows.ColumnTypes()
-	colNames := rows.Columns()
+func readAsTimeSeries(rows telemetrystore.Rows, queryWindow *qbtypes.TimeRange, step qbtypes.Step, queryName string) (*qbtypes.TimeSeriesData, error) {
+	colTypes, _ := rows.ColumnTypes()
+	colNames, _ := rows.Columns()
 
 	slots := make([]any, len(colTypes))
 	numericColsCount := 0
@@ -230,7 +228,7 @@ func readAsTimeSeries(rows driver.Rows, queryWindow *qbtypes.TimeRange, step qbt
 					Value: *val,
 				})
 
-			case *telemetrystoretypes.JSONValue, *chcol.Variant:
+			case *telemetrystoretypes.JSONValue:
 				val := labelValue(derefValue(ptr))
 				lblVals = append(lblVals, val)
 				lblObjs = append(lblObjs, &qbtypes.Label{
@@ -332,9 +330,9 @@ func isNumericKind(t reflect.Type) bool {
 	}
 }
 
-func readAsScalar(rows driver.Rows, queryName string) (*qbtypes.ScalarData, error) {
-	colNames := rows.Columns()
-	colTypes := rows.ColumnTypes()
+func readAsScalar(rows telemetrystore.Rows, queryName string) (*qbtypes.ScalarData, error) {
+	colNames, _ := rows.Columns()
+	colTypes, _ := rows.ColumnTypes()
 
 	cd := make([]*qbtypes.ColumnDescriptor, len(colNames))
 
@@ -410,9 +408,9 @@ func derefValue(v any) any {
 	return val.Interface()
 }
 
-func readAsRaw(rows driver.Rows, queryName string) (*qbtypes.RawData, error) {
-	colNames := rows.Columns()
-	colTypes := rows.ColumnTypes()
+func readAsRaw(rows telemetrystore.Rows, queryName string) (*qbtypes.RawData, error) {
+	colNames, _ := rows.Columns()
+	colTypes, _ := rows.ColumnTypes()
 	colCnt := len(colNames)
 
 	var outRows []*qbtypes.RawRow
@@ -439,17 +437,16 @@ func readAsRaw(rows driver.Rows, queryName string) (*qbtypes.RawData, error) {
 			val := unwrapVariant(reflect.ValueOf(cellPtr).Elem().Interface())
 
 			// special-case: timestamp column
-			if name == "timestamp" || name == "timestamp_datetime" {
-				switch t := val.(type) {
-				case time.Time:
-					rr.Timestamp = t
-				case uint64: // epoch-ns stored as integer
-					rr.Timestamp = time.Unix(0, int64(t))
-				case int64:
-					rr.Timestamp = time.Unix(0, t)
-				default:
-					// leave zero time if unrecognised
-				}
+			// OpenObserve uses _timestamp (microseconds); SigNoz frontend expects timestamp (nanoseconds).
+			if name == "timestamp" || name == "timestamp_datetime" || name == "_timestamp" {
+				rr.Timestamp = toTimestamp(val)
+			}
+
+			// OpenObserve stores _timestamp in microseconds; the frontend expects
+			// a "timestamp" key in nanoseconds.  Rename and convert here so that
+			// the response is compatible with the SigNoz frontend contract.
+			if name == "_timestamp" {
+				rr.Data["timestamp"] = toEpochNano(val)
 			}
 
 			rr.Data[name] = val
@@ -543,4 +540,82 @@ func numericAsFloat(v any) float64 {
 	default:
 		return math.NaN()
 	}
+}
+
+// toEpochMicro converts any value to epoch microseconds.
+// OpenObserve _timestamp is in microseconds; this function handles all types
+// that OpenObserve may return (float64, int64, string, etc.).
+func toEpochMicro(v any) int64 {
+	switch x := v.(type) {
+	case float64:
+		return int64(x)
+	case int64:
+		return x
+	case uint64:
+		return int64(x)
+	case int:
+		return int64(x)
+	case string:
+		if f, err := strconv.ParseFloat(x, 64); err == nil {
+			return int64(f)
+		}
+	case json.Number:
+		if f, err := x.Float64(); err == nil {
+			return int64(f)
+		}
+	}
+	return 0
+}
+
+// toTimestamp converts any value to time.Time.
+// It auto-detects the epoch unit (nanoseconds, microseconds, milliseconds, seconds).
+func toTimestamp(v any) time.Time {
+	switch x := v.(type) {
+	case time.Time:
+		return x
+	case string:
+		// Try RFC3339 first
+		if t, err := time.Parse(time.RFC3339Nano, x); err == nil {
+			return t
+		}
+		// Try as numeric epoch
+		if f, err := strconv.ParseFloat(x, 64); err == nil {
+			return epochToTime(int64(f))
+		}
+		return time.Time{}
+	default:
+		return epochToTime(toEpochMicro(v))
+	}
+}
+
+// epochToTime converts an epoch value to time.Time, auto-detecting the unit.
+// Thresholds are chosen to avoid ambiguity for dates between year 2000 and 2250:
+//   - microseconds: ~9.5e14 (2000) to ~8.9e15 (2250)  → always < 1e16
+//   - nanoseconds:  ~9.5e17 (2000) to ~8.9e18 (2250)  → always > 1e17
+func epochToTime(iv int64) time.Time {
+	if iv > 1e17 { // nanoseconds
+		return time.Unix(0, iv)
+	} else if iv > 1e12 { // microseconds
+		return time.UnixMicro(iv)
+	} else if iv > 1e9 { // milliseconds
+		return time.UnixMilli(iv)
+	} else if iv > 0 { // seconds
+		return time.Unix(iv, 0)
+	}
+	return time.Time{}
+}
+
+// toEpochNano converts any value to epoch nanoseconds (int64).
+// OpenObserve _timestamp is in microseconds, so we multiply by 1000.
+func toEpochNano(v any) int64 {
+	micro := toEpochMicro(v)
+	if micro == 0 {
+		return 0
+	}
+	// If the value is already in nanoseconds range (>1e17), return as-is
+	if micro > 1e17 {
+		return micro
+	}
+	// Otherwise treat as microseconds and convert to nanoseconds
+	return micro * 1000
 }
