@@ -256,11 +256,13 @@ func translateClickHouseToOpenObserve(query string) string {
 	// For practical purposes, checking parent_span_id = '' (root spans) is sufficient.
 	// Must run BEFORE parent_span_id → reference_parent_span_id replacement.
 	// The pattern has nested parens so [^)]* doesn't work; use .*? instead.
+	// In OpenObserve, root spans have reference_parent_span_id as NULL (not empty string).
+	// Must use IS NULL OR = '' to catch both cases.
 	q = regexp.MustCompile(`(?i)\(parent_span_id\s*=\s*''\s+OR\s+\(.*?AND\s+parent_span_id\s*!=\s*''\)\)`).
-		ReplaceAllString(q, "parent_span_id = ''")
+		ReplaceAllString(q, "(parent_span_id IS NULL OR parent_span_id = '')")
 	// Also handle the case after parent_span_id has been replaced to reference_parent_span_id
 	q = regexp.MustCompile(`(?i)\(reference_parent_span_id\s*=\s*''\s+OR\s+\(.*?AND\s+reference_parent_span_id\s*!=\s*''\)\)`).
-		ReplaceAllString(q, "reference_parent_span_id = ''")
+		ReplaceAllString(q, "(reference_parent_span_id IS NULL OR reference_parent_span_id = '')")
 
 	// kind_string → span_kind (OpenObserve uses span_kind for span kind as string)
 	q = regexp.MustCompile(`\bkind_string\b`).ReplaceAllString(q, "span_kind")
@@ -279,8 +281,8 @@ func translateClickHouseToOpenObserve(query string) string {
 	q = regexp.MustCompile(`(?i)resource_string_(\w+)\$\$(\w+)`).
 		ReplaceAllString(q, "resource_${1}_${2}")
 
-	// response_status_code → http_status_code (OpenObserve uses http_status_code if available)
-	q = regexp.MustCompile(`(?i)\bresponse_status_code\b`).ReplaceAllString(q, "http_status_code")
+	// response_status_code → http_response_status_code (OpenObserve OTel field name)
+	q = regexp.MustCompile(`(?i)\bresponse_status_code\b`).ReplaceAllString(q, "http_response_status_code")
 
 	// ---- PostgreSQL-style :: cast: expr::Type → CAST(expr AS Type) ----
 	// Handle chained casts like x::String::Int
