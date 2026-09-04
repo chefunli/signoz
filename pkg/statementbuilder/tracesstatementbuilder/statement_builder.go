@@ -395,10 +395,6 @@ func (b *traceQueryStatementBuilder) buildListQuery(
 		cteArgs = append(cteArgs, args)
 	}
 
-	// Always include service.name for the list view display
-	serviceNameExpr := sqlbuilder.Escape("resource_string_service$$name")
-	sb.SelectMore(fmt.Sprintf("%s AS `%s`", serviceNameExpr, selectColumnAlias(len(query.SelectFields), "service.name")))
-
 	if scopeFrags, scopeArgs := b.attachTraceScope(sb, frag != ""); len(scopeFrags) > 0 {
 		cteFragments = append(cteFragments, scopeFrags...)
 		cteArgs = append(cteArgs, scopeArgs...)
