@@ -167,6 +167,29 @@ func translateResourceScopeField(q string) string {
 	return q
 }
 
+// translateResourceResolutionPattern replaces ClickHouse's multiIf-based resource field
+// resolution patterns with direct OpenObserve flat column references.
+// Pattern: multiIf(resource.`key` IS NOT NULL, resource.`key`::String,
+//
+//	mapContains(resources_string, 'key'), resources_string['key'], NULL)
+//
+// Replace with: flat_column_name (from resourceFieldMap)
+func translateResourceResolutionPattern(q string, fieldMap map[string]string) string {
+	for dottedKey, flatCol := range fieldMap {
+		escapedKey := strings.ReplaceAll(dottedKey, ".", `\.`)
+		// Match the multiIf pattern with backtick-quoted key
+		pattern := fmt.Sprintf(`(?i)multiIf\s*\(\s*resource\.\x60%s\x60\s+IS\s+NOT\s+NULL\s*,\s*resource\.\x60%s\x60\s*::\s*\w+\s*,\s*mapContains\s*\(\s*resources_string\s*,\s*'[^']*'\s*\)\s*,\s*resources_string\s*\[\s*'[^']*'\s*\]\s*,\s*NULL\s*\)`,
+			escapedKey, escapedKey)
+		q = regexp.MustCompile(pattern).ReplaceAllString(q, flatCol)
+
+		// Also match without backticks: resource.key
+		pattern2 := fmt.Sprintf(`(?i)multiIf\s*\(\s*resource\.%s\s+IS\s+NOT\s+NULL\s*,\s*resource\.%s\s*::\s*\w+\s*,\s*mapContains\s*\(\s*resources_string\s*,\s*'[^']*'\s*\)\s*,\s*resources_string\s*\[\s*'[^']*'\s*\]\s*,\s*NULL\s*\)`,
+			escapedKey, escapedKey)
+		q = regexp.MustCompile(pattern2).ReplaceAllString(q, flatCol)
+	}
+	return q
+}
+
 // ---------------------------------------------------------------------------
 // Main translator
 // ---------------------------------------------------------------------------
@@ -213,6 +236,13 @@ func translateClickHouseToOpenObserve(query string) string {
 	q = regexp.MustCompile(`(?i)\s+SETTINGS\s+.*$`).ReplaceAllString(q, "")
 
 	// ---- Backtick-quoted identifiers ----
+	// Pre-translate ClickHouse resource field resolution patterns FIRST
+	// (must run BEFORE translateResourceScopeField which breaks the multiIf pattern)
+	// Pattern: multiIf(resource.`key` IS NOT NULL, resource.`key`::String,
+	//                  mapContains(resources_string, 'key'), resources_string['key'], NULL)
+	// Replace with: flat_column_name
+	q = translateResourceResolutionPattern(q, resourceFieldMap)
+
 	// resource.`service.name` → service_name  (must run before generic backtick removal)
 	q = translateResourceScopeField(q)
 

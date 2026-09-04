@@ -315,6 +315,11 @@ func (item *StorableSpan) ToWaterfallSpan(traceID string) *WaterfallSpan {
 	resources := make(map[string]string)
 	maps.Copy(resources, item.ResourcesString)
 
+	// Ensure service.name is in resources for frontend compatibility
+	if _, exists := resources["service.name"]; !exists && item.ServiceName != "" {
+		resources["service.name"] = item.ServiceName
+	}
+
 	return &WaterfallSpan{
 		Attributes:         item.Attributes(),
 		DBName:             item.DBName,

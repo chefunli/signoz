@@ -245,3 +245,5 @@ test-login.ps1
 test-traces-list.ps1
 test-traces-v2.ps1
 signoz-backend.exe~
+config-local.yml
+config-local.yaml

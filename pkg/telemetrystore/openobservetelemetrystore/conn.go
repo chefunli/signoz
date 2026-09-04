@@ -179,6 +179,12 @@ func (c *ooConn) executeQuery(ctx context.Context, query string, args ...any) (*
 		return &ooResponse{Hits: []map[string]any{}, Total: 0}, nil
 	}
 
+	// 5.5. Span percentile queries → build native OpenObserve SQL
+	if isSpanPercentileQuery(sql) {
+		c.logger.InfoContext(ctx, "openobserve: routing to handleSpanPercentileQuery")
+		return c.handleSpanPercentileQuery(ctx, sql)
+	}
+
 	// 6. For all other queries, determine signal type and build a basic O2 query
 	c.logger.InfoContext(ctx, "openobserve: falling through to handleGenericQuery", "sql_full", sql[:min(len(sql), 500)])
 	return c.handleGenericQuery(ctx, sql, args...)
@@ -713,8 +719,7 @@ func applySelectReplacements(sql string) string {
 	sql = regexp.MustCompile(`\btrace_state\b`).ReplaceAllString(sql, "'' AS trace_state")
 	sql = regexp.MustCompile(`\bflags\b`).ReplaceAllString(sql, "0 AS flags")
 	sql = regexp.MustCompile(`\bis_remote\b`).ReplaceAllString(sql, "'' AS is_remote")
-	sql = regexp.MustCompile(`\bstatus_code_string\b`).ReplaceAllString(sql,
-		"(CASE WHEN status_code = 1 THEN 'OK' WHEN status_code = 2 THEN 'ERROR' ELSE 'UNSET' END) AS status_code_string")
+	sql = regexp.MustCompile(`\bstatus_code_string\b`).ReplaceAllString(sql, "span_status AS status_code_string")
 	sql = regexp.MustCompile(`\blinks\b(?!\s+as\s+\w+)(?:\s+as\s+\w+)?`).ReplaceAllString(sql, "links AS references")
 
 	// Restore placeholders
@@ -884,13 +889,84 @@ func mapOOSpanToStorableSpan(span map[string]any) map[string]any {
 	hit["attributes_string"] = getMapOrEmpty(span, "attributes_string")
 	hit["attributes_number"] = getMapOrEmpty(span, "attributes_number")
 	hit["attributes_bool"] = getMapOrEmpty(span, "attributes_bool")
-	hit["resources_string"] = getMapOrEmpty(span, "resources_string")
+
+	// Build resources_string from OpenObserve's flattened resource fields.
+	// OpenObserve stores resource attributes as top-level fields (e.g. service_name, service_host_name).
+	// We need to reconstruct the resources_string map with dotted keys (e.g. service.name, service.host.name).
+	resourcesString := make(map[string]any)
+
+	// First, if OpenObserve has a resources_string map, use it as base
+	if existing := getMapOrEmpty(span, "resources_string"); len(existing) > 0 {
+		resourcesString = existing
+	}
+
+	// Map known OpenObserve flattened resource fields to OTel dotted keys
+	resourceFieldMapping := map[string]string{
+		"service_name":                        "service.name",
+		"service_host_name":                   "service.host.name",
+		"service_deployment_environment":      "deployment.environment",
+		"service_os_type":                     "os.type",
+		"service_process_command":             "process.command",
+		"service_process_command_line":        "process.command_line",
+		"service_process_executable_name":     "process.executable.name",
+		"service_process_executable_path":     "process.executable.path",
+		"service_process_pid":                 "process.pid",
+		"service_process_runtime_name":        "process.runtime.name",
+		"service_process_runtime_version":     "process.runtime.version",
+		"service_telemetry_sdk_name":          "telemetry.sdk.name",
+		"service_telemetry_sdk_language":      "telemetry.sdk.language",
+		"service_telemetry_sdk_version":       "telemetry.sdk.version",
+		"service_process_runtime_description": "process.runtime.description",
+	}
+	for ooField, otelKey := range resourceFieldMapping {
+		if val := getString(span, ooField); val != "" {
+			if _, exists := resourcesString[otelKey]; !exists {
+				resourcesString[otelKey] = val
+			}
+		}
+	}
+
+	// Also scan for any other top-level string fields starting with known resource prefixes
+	nonResourceFields := map[string]bool{
+		"_timestamp": true, "_o2_ingest_ts": true, "start_time": true, "end_time": true,
+		"duration": true, "span_id": true, "trace_id": true, "parent_span_id": true,
+		"operation_name": true, "span_kind": true, "status_code": true, "status_message": true,
+		"events": true, "links": true, "flags": true, "name": true, "has_error": true,
+		"page_url": true, "http_method": true, "http_url": true, "http_host": true,
+		"http_status_code": true, "http_request_content_length": true, "http_response_content_length": true,
+		"db_system": true, "db_operation": true, "db_name": true, "db_statement": true,
+		"rpc_system": true, "rpc_service": true, "rpc_method": true,
+		"messaging_system": true, "messaging_operation": true, "messaging_destination": true,
+	}
+	for k, v := range span {
+		if strVal, ok := v.(string); ok && strVal != "" {
+			if nonResourceFields[k] {
+				continue
+			}
+			if _, exists := resourcesString[k]; exists {
+				continue
+			}
+			// Add any string field starting with known resource prefixes
+			for _, prefix := range []string{"service_", "telemetry_", "os_", "process_", "host_", "cloud_", "container_", "k8s_", "deployment_"} {
+				if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+					// Convert underscore to dotted format
+					dottedKey := strings.ReplaceAll(k, "_", ".")
+					resourcesString[dottedKey] = strVal
+					break
+				}
+			}
+		}
+	}
+
+	hit["resources_string"] = resourcesString
 
 	hit["events"] = convertEventsToStringSlice(span["events"])
 	hit["status_message"] = getString(span, "status_message")
 
-	// status_code_string → derive from status_code
-	if sc, ok := toInt64Safe(span["status_code"]); ok {
+	// status_code_string → use span_status from OpenObserve directly, fallback to derive from status_code
+	if spanStatus := getString(span, "span_status"); spanStatus != "" {
+		hit["status_code_string"] = spanStatus
+	} else if sc, ok := toInt64Safe(span["status_code"]); ok {
 		switch sc {
 		case 1:
 			hit["status_code_string"] = "OK"
@@ -948,7 +1024,7 @@ func mapOOSpanToStorableSpan(span map[string]any) map[string]any {
 	hit["http_host"] = ""
 	hit["external_http_method"] = ""
 	hit["external_http_url"] = ""
-	hit["response_status_code"] = getString(span, "http_status_code")
+	hit["response_status_code"] = getString(span, "http_response_status_code")
 	hit["references"] = getString(span, "links")
 
 	return hit
@@ -1311,4 +1387,122 @@ func (c *ooConn) handleFieldKeysMetadataQuery(ctx context.Context, sql string) (
 		Total:       len(hits),
 		columnOrder: []string{"tag_key", "tag_type", "tag_data_type", "priority"},
 	}, nil
+}
+
+// isSpanPercentileQuery detects span percentile queries (contain quantile + __result_ aliases)
+func isSpanPercentileQuery(sql string) bool {
+	lower := strings.ToLower(sql)
+	return strings.Contains(lower, "quantile(") && strings.Contains(lower, "__result_")
+}
+
+// handleSpanPercentileQuery builds native OpenObserve SQL for span percentile queries.
+// Parses the original ClickHouse SQL to extract filters and time range,
+// then constructs a direct OpenObserve query.
+func (c *ooConn) handleSpanPercentileQuery(ctx context.Context, originalSQL string) (*ooResponse, error) {
+	c.logger.InfoContext(ctx, "openobserve: handleSpanPercentileQuery original SQL", "sql", originalSQL[:min(len(originalSQL), 2000)])
+
+	// Extract time range from WHERE clause
+	startRe := regexp.MustCompile(`(?i)(?:_?timestamp|start_time)\s*>=\s*(\d+)`)
+	endRe := regexp.MustCompile(`(?i)(?:_?timestamp|start_time)\s*<\s*(\d+)`)
+	startMicro := int64(0)
+	endMicro := int64(0)
+	if m := startRe.FindStringSubmatch(originalSQL); len(m) >= 2 {
+		startMicro = parseInt64(m[1])
+	}
+	if m := endRe.FindStringSubmatch(originalSQL); len(m) >= 2 {
+		endMicro = parseInt64(m[1])
+	}
+
+	// Extract filter conditions from WHERE clause
+	// The QBv5 pipeline generates: multiIf(...) = 'value' for resource fields
+	// We need to find the actual filter values, not the map keys
+	serviceName := ""
+	// Look for the pattern: = 'value' after the service.name multiIf resolution
+	// The WHERE clause has: ... AND multiIf(...) = 'browser-frontend' AND ...
+	// We need to find the value after the multiIf pattern for service.name
+	svcFilterRe := regexp.MustCompile(`(?i)resource\.\x60service\.name\x60[^)]+\)\s*=\s*'([^']+)'`)
+	if m := svcFilterRe.FindStringSubmatch(originalSQL); len(m) >= 2 {
+		serviceName = m[1]
+	}
+	// Fallback: look for simple service.name = 'value' pattern
+	if serviceName == "" {
+		simpleSvcRe := regexp.MustCompile(`(?i)service\.name\s*=\s*'([^']+)'`)
+		if m := simpleSvcRe.FindStringSubmatch(originalSQL); len(m) >= 2 {
+			serviceName = m[1]
+		}
+	}
+
+	// Extract operation name from the filter
+	operationName := ""
+	// Look for: name <> '' pattern followed by = 'value' or just name = 'value'
+	opFilterRe := regexp.MustCompile(`(?i)\bname\s*=\s*'([^']+)'`)
+	if m := opFilterRe.FindStringSubmatch(originalSQL); len(m) >= 2 {
+		operationName = m[1]
+	}
+
+	// Extract duration threshold from countIf
+	durationThreshold := int64(0)
+	durRe := regexp.MustCompile(`(?i)duration_nano\s*<=\s*(\d+)`)
+	if m := durRe.FindStringSubmatch(originalSQL); len(m) >= 2 {
+		durationThreshold = parseInt64(m[1])
+	}
+
+	c.logger.InfoContext(ctx, "openobserve: handleSpanPercentileQuery",
+		"service_name", serviceName, "operation_name", operationName,
+		"duration_threshold", durationThreshold, "start", startMicro, "end", endMicro)
+
+	// Build native OpenObserve SQL
+	// OpenObserve uses: service_name, operation_name, duration (microseconds)
+	whereClauses := []string{}
+	if startMicro > 0 {
+		whereClauses = append(whereClauses, fmt.Sprintf("_timestamp >= %d", startMicro))
+	}
+	if endMicro > 0 {
+		whereClauses = append(whereClauses, fmt.Sprintf("_timestamp < %d", endMicro))
+	}
+	if serviceName != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("service_name = '%s'", strings.ReplaceAll(serviceName, "'", "''")))
+	}
+	if operationName != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("operation_name = '%s'", strings.ReplaceAll(operationName, "'", "''")))
+	}
+
+	whereStr := ""
+	if len(whereClauses) > 0 {
+		whereStr = " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// OpenObserve duration is in microseconds, original threshold is in nanoseconds
+	durationThresholdMicro := durationThreshold / 1000
+
+	nativeSQL := fmt.Sprintf(`SELECT 
+		service_name AS "__GROUP_BY_KEY_0_service.name", 
+		operation_name AS __GROUP_BY_KEY_1_name,
+		PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY duration) AS __result_0,
+		PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY duration) AS __result_1,
+		PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY duration) AS __result_2,
+		(100.0 * SUM(CASE WHEN duration <= %d THEN 1 ELSE 0 END)) / COUNT(*) AS __result_3
+	FROM "default"%s
+	GROUP BY service_name, operation_name
+	ORDER BY __result_0 DESC`, durationThresholdMicro, whereStr)
+
+	c.logger.InfoContext(ctx, "openobserve: span percentile native SQL", "sql", nativeSQL[:min(len(nativeSQL), 500)])
+
+	resp, err := c.executeOpenObserveQuery(ctx, "default", "traces", nativeSQL)
+	if err != nil {
+		return nil, fmt.Errorf("query OpenObserve: %w", err)
+	}
+
+	// Convert duration from microseconds back to nanoseconds for the response
+	for _, hit := range resp.Hits {
+		for _, key := range []string{"__result_0", "__result_1", "__result_2"} {
+			if v, ok := hit[key]; ok {
+				if f, err := toFloat64(v); err == nil {
+					hit[key] = f * 1000 // microseconds → nanoseconds
+				}
+			}
+		}
+	}
+
+	return resp, nil
 }

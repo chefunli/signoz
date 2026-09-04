@@ -183,8 +183,11 @@ func (r *ooRow) ScanStruct(dest any) error {
 			continue
 		}
 
-		// Try JSON tag first, then field name
+		// Try JSON tag first, then ch tag, then field name
 		colName := field.Tag.Get("json")
+		if colName == "" || colName == "-" {
+			colName = field.Tag.Get("ch")
+		}
 		if colName == "" || colName == "-" {
 			colName = field.Name
 		}
@@ -226,7 +229,8 @@ func (b *ooBatch) Close() error          { return nil }
 // the expected column order. Returns alias names (or column expressions) in order.
 func extractColumnOrderFromSQL(sql string) []string {
 	// Find SELECT ... FROM boundaries
-	selectRe := regexp.MustCompile(`(?is)^\s*SELECT\s+(?:DISTINCT\s+)?(.+?)\s+FROM\b`)
+	// Handle both DISTINCT and DISTINCT ON (...) syntax
+	selectRe := regexp.MustCompile(`(?is)^\s*SELECT\s+(?:DISTINCT\s+(?:ON\s*\([^)]+\)\s*)?)?(.+)\s+FROM\b`)
 	m := selectRe.FindStringSubmatch(sql)
 	if len(m) < 2 {
 		return nil

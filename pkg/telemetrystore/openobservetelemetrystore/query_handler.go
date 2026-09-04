@@ -434,7 +434,7 @@ func buildSearchTracesQuery(originalSQL string) (string, string, string) {
 			'{}' as resources_string,
 			events,
 			status_message,
-			CASE WHEN status_code = 1 THEN 'OK' WHEN status_code = 2 THEN 'ERROR' ELSE 'UNSET' END as status_code_string,
+			span_status as status_code_string,
 			span_kind as kind_string
 		FROM "default" WHERE %s`,
 		filters,
