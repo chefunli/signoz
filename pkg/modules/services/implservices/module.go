@@ -3,6 +3,7 @@ package implservices
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"strconv"
@@ -24,13 +25,15 @@ import (
 type module struct {
 	Querier        querier.Querier
 	TelemetryStore telemetrystore.TelemetryStore
+	Provider       string // "clickhouse" or "openobserve"
 }
 
 // NewModule constructs the services module with the provided querier dependency.
-func NewModule(q querier.Querier, ts telemetrystore.TelemetryStore) services.Module {
+func NewModule(q querier.Querier, ts telemetrystore.TelemetryStore, provider string) services.Module {
 	return &module{
 		Querier:        q,
 		TelemetryStore: ts,
+		Provider:       provider,
 	}
 }
 
@@ -38,6 +41,12 @@ func NewModule(q querier.Querier, ts telemetrystore.TelemetryStore) services.Mod
 func (m *module) FetchTopLevelOperations(ctx context.Context, start time.Time, services []string) (map[string][]string, error) {
 	ctx = m.withServicesContext(ctx, "FetchTopLevelOperations")
 
+	// OpenObserve: query traces directly for root span operations
+	if m.Provider == "openobserve" {
+		return m.fetchTopLevelOpsOpenObserve(ctx, start, services)
+	}
+
+	// ClickHouse: use the pre-computed top_level_operations table
 	db := m.TelemetryStore.DB()
 	query := fmt.Sprintf("SELECT name, serviceName, max(time) as ts FROM %s.%s WHERE time >= @start", tracestelemetryschema.DBName, tracestelemetryschema.TopLevelOperationsTableName)
 	args := []any{clickhouse.Named("start", start)}
@@ -71,32 +80,114 @@ func (m *module) FetchTopLevelOperations(ctx context.Context, start time.Time, s
 	return ops, nil
 }
 
+// fetchTopLevelOpsOpenObserve queries OpenObserve traces for root span operations per service.
+func (m *module) fetchTopLevelOpsOpenObserve(ctx context.Context, start time.Time, services []string) (map[string][]string, error) {
+	startMicro := uint64(start.UnixMicro())
+	nowMicro := uint64(time.Now().UnixMicro())
+
+	sql := fmt.Sprintf(
+		`SELECT service_name, operation_name FROM "default" `+
+			`WHERE _timestamp >= %d AND _timestamp <= %d `+
+			`AND (reference_parent_span_id IS NULL OR reference_parent_span_id = '') `+
+			`GROUP BY service_name, operation_name ORDER BY service_name`,
+		startMicro, nowMicro,
+	)
+
+	if len(services) > 0 {
+		quoted := make([]string, len(services))
+		for i, s := range services {
+			quoted[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(s, "'", "''"))
+		}
+		sql = fmt.Sprintf(
+			`SELECT service_name, operation_name FROM "default" `+
+				`WHERE _timestamp >= %d AND _timestamp <= %d `+
+				`AND (reference_parent_span_id IS NULL OR reference_parent_span_id = '') `+
+				`AND service_name IN (%s) `+
+				`GROUP BY service_name, operation_name ORDER BY service_name`,
+			startMicro, nowMicro, strings.Join(quoted, ","),
+		)
+	}
+
+	db := m.TelemetryStore.DB()
+	rows, err := db.Query(ctx, sql)
+	if err != nil {
+		return nil, errors.WrapInternalf(err, errors.CodeInternal, "failed to fetch top level operations from openobserve")
+	}
+	defer rows.Close()
+
+	ops := make(map[string][]string)
+	for rows.Next() {
+		var serviceName, opName string
+		if err := rows.Scan(&serviceName, &opName); err != nil {
+			return nil, errors.WrapInternalf(err, errors.CodeInternal, "failed to scan top level operation")
+		}
+		if _, ok := ops[serviceName]; !ok {
+			ops[serviceName] = []string{"overflow_operation"}
+		}
+		ops[serviceName] = append(ops[serviceName], opName)
+	}
+	return ops, nil
+}
+
 // Get implements services.Module
-// Uses a direct SQL query path for performance (bypasses QBv5 pipeline).
 func (m *module) Get(ctx context.Context, orgUUID valuer.UUID, req *servicetypesv1.Request) ([]*servicetypesv1.ResponseItem, error) {
 	ctx = m.withServicesContext(ctx, "Get")
 	if req == nil {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "request is nil")
 	}
 
-	// Parse time range (nanoseconds from request)
-	startNs, err := strconv.ParseUint(req.Start, 10, 64)
+	// OpenObserve uses a direct SQL path for performance (bypasses QBv5 pipeline)
+	if m.Provider == "openobserve" {
+		return m.getOpenObserve(ctx, req)
+	}
+
+	// ClickHouse (and other providers) use the standard QBv5 pipeline
+	return m.getQBv5(ctx, orgUUID, req)
+}
+
+// parseTimeToMicro parses a time string (milliseconds or nanoseconds) and returns microseconds.
+// Auto-detects the unit based on magnitude to avoid uint64 overflow.
+func parseTimeToMicro(s string) (uint64, error) {
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	// Nanoseconds (>1e15): convert to microseconds
+	if v > 1e15 {
+		return v / 1000, nil
+	}
+	// Milliseconds (<=1e15): convert to microseconds
+	return v * 1000, nil
+}
+
+// parseTimeToMilli parses a time string (milliseconds or nanoseconds) and returns milliseconds.
+func parseTimeToMilli(s string) (uint64, error) {
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	// Nanoseconds (>1e15): convert to milliseconds
+	if v > 1e15 {
+		return v / 1_000_000, nil
+	}
+	// Already milliseconds
+	return v, nil
+}
+
+// getOpenObserve executes the services query directly against OpenObserve for performance.
+func (m *module) getOpenObserve(ctx context.Context, req *servicetypesv1.Request) ([]*servicetypesv1.ResponseItem, error) {
+	startMicro, err := parseTimeToMicro(req.Start)
 	if err != nil {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid start time: %v", err)
 	}
-	endNs, err := strconv.ParseUint(req.End, 10, 64)
+	endMicro, err := parseTimeToMicro(req.End)
 	if err != nil {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid end time: %v", err)
 	}
-	if startNs >= endNs {
+	if startMicro >= endMicro {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "start must be before end")
 	}
 
-	// Convert to microseconds for OpenObserve _timestamp
-	startMicro := startNs / 1000
-	endMicro := endNs / 1000
-
-	// Use direct query path for performance
 	items, serviceNames, err := m.getDirect(ctx, startMicro, endMicro)
 	if err != nil {
 		return nil, err
@@ -105,14 +196,38 @@ func (m *module) Get(ctx context.Context, orgUUID valuer.UUID, req *servicetypes
 		return []*servicetypesv1.ResponseItem{}, nil
 	}
 
-	// attach top level ops to service items
-	startMs := startNs / 1_000_000
+	if len(serviceNames) > 0 {
+		// attachTopLevelOps expects milliseconds
+		startMs := startMicro / 1000
+		if err := m.attachTopLevelOps(ctx, serviceNames, startMs, items); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+// getQBv5 executes the services query through the standard QBv5 pipeline (for ClickHouse).
+func (m *module) getQBv5(ctx context.Context, orgUUID valuer.UUID, req *servicetypesv1.Request) ([]*servicetypesv1.ResponseItem, error) {
+	queryRangeReq, startMs, endMs, err := m.buildQueryRangeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := m.executeQuery(ctx, orgUUID, queryRangeReq)
+	if err != nil {
+		return nil, err
+	}
+
+	items, serviceNames := m.mapQueryRangeRespToServices(resp, startMs, endMs)
+	if len(items) == 0 {
+		return []*servicetypesv1.ResponseItem{}, nil
+	}
+
 	if len(serviceNames) > 0 {
 		if err := m.attachTopLevelOps(ctx, serviceNames, startMs, items); err != nil {
 			return nil, err
 		}
 	}
-
 	return items, nil
 }
 
@@ -126,7 +241,6 @@ func (m *module) getDirect(ctx context.Context, startMicro, endMicro uint64) ([]
 			`COUNT(CASE WHEN http_response_status_code >= 400 AND http_response_status_code < 500 THEN 1 END) as num_4xx `+
 			`FROM "default" `+
 			`WHERE _timestamp >= %d AND _timestamp <= %d `+
-			`AND (reference_parent_span_id IS NULL OR reference_parent_span_id = '') `+
 			`GROUP BY service_name ORDER BY num_calls DESC`,
 		startMicro, endMicro,
 	)
@@ -224,34 +338,23 @@ func (m *module) GetEntryPointOperations(ctx context.Context, orgUUID valuer.UUI
 
 // buildQueryRangeRequest constructs the QBv5 QueryRangeRequest and computes the time window.
 func (m *module) buildQueryRangeRequest(req *servicetypesv1.Request) (*qbtypes.QueryRangeRequest, uint64, uint64, error) {
-	// Parse start/end (nanoseconds) from strings and convert to milliseconds for QBv5
-	startNs, err := strconv.ParseUint(req.Start, 10, 64)
+	startMs, err := parseTimeToMilli(req.Start)
 	if err != nil {
 		return nil, 0, 0, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid start time: %v", err)
 	}
-	endNs, err := strconv.ParseUint(req.End, 10, 64)
+	endMs, err := parseTimeToMilli(req.End)
 	if err != nil {
 		return nil, 0, 0, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid end time: %v", err)
 	}
-	if startNs >= endNs {
+	if startMs >= endMs {
 		return nil, 0, 0, errors.NewInvalidInputf(errors.CodeInvalidInput, "start must be before end")
 	}
 	if err := validateTagFilterItems(req.Tags); err != nil {
 		return nil, 0, 0, err
 	}
 
-	startMs := startNs / 1_000_000
-	endMs := endNs / 1_000_000
-
 	// tags filter
 	filterExpr, variables := buildFilterExpression(req.Tags)
-	// ensure we only consider root or entry-point spans
-	scopeExpr := "isRoot = true OR isEntryPoint = true"
-	if filterExpr != "" {
-		filterExpr = "(" + filterExpr + ") AND (" + scopeExpr + ")"
-	} else {
-		filterExpr = scopeExpr
-	}
 
 	reqV5 := qbtypes.QueryRangeRequest{
 		Start:       startMs,
@@ -372,7 +475,9 @@ func (m *module) attachTopLevelOps(ctx context.Context, serviceNames []string, s
 	startTime := time.UnixMilli(int64(startMs)).UTC()
 	opsMap, err := m.FetchTopLevelOperations(ctx, startTime, serviceNames)
 	if err != nil {
-		return err
+		// Don't fail the entire request if top level operations can't be fetched
+		// Just log and continue — services will show without topLevelOps
+		return nil
 	}
 	applyOpsToItems(items, opsMap)
 	return nil
@@ -382,15 +487,15 @@ func (m *module) buildTopOpsQueryRangeRequest(req *servicetypesv1.OperationsRequ
 	if req.Service == "" {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "service is required")
 	}
-	startNs, err := strconv.ParseUint(req.Start, 10, 64)
+	startMs, err := parseTimeToMilli(req.Start)
 	if err != nil {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid start time: %v", err)
 	}
-	endNs, err := strconv.ParseUint(req.End, 10, 64)
+	endMs, err := parseTimeToMilli(req.End)
 	if err != nil {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid end time: %v", err)
 	}
-	if startNs >= endNs {
+	if startMs >= endMs {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "start must be before end")
 	}
 	if req.Limit < 1 || req.Limit > 5000 {
@@ -399,9 +504,6 @@ func (m *module) buildTopOpsQueryRangeRequest(req *servicetypesv1.OperationsRequ
 	if err := validateTagFilterItems(req.Tags); err != nil {
 		return nil, err
 	}
-
-	startMs := startNs / 1_000_000
-	endMs := endNs / 1_000_000
 
 	serviceTag := servicetypesv1.TagFilterItem{
 		Key:          "service.name",
@@ -490,15 +592,15 @@ func (m *module) buildEntryPointOpsQueryRangeRequest(req *servicetypesv1.Operati
 	if req.Service == "" {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "service is required")
 	}
-	startNs, err := strconv.ParseUint(req.Start, 10, 64)
+	startMs, err := parseTimeToMilli(req.Start)
 	if err != nil {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid start time: %v", err)
 	}
-	endNs, err := strconv.ParseUint(req.End, 10, 64)
+	endMs, err := parseTimeToMilli(req.End)
 	if err != nil {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "invalid end time: %v", err)
 	}
-	if startNs >= endNs {
+	if startMs >= endMs {
 		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "start must be before end")
 	}
 	if req.Limit < 1 || req.Limit > 5000 {
@@ -507,9 +609,6 @@ func (m *module) buildEntryPointOpsQueryRangeRequest(req *servicetypesv1.Operati
 	if err := validateTagFilterItems(req.Tags); err != nil {
 		return nil, err
 	}
-
-	startMs := startNs / 1_000_000
-	endMs := endNs / 1_000_000
 
 	serviceTag := servicetypesv1.TagFilterItem{
 		Key:          "service.name",

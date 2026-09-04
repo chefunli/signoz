@@ -516,13 +516,17 @@ func buildLogsQuery(originalSQL string) (string, string, string) {
 	startMicro, endMicro := extractTimeRange(originalSQL)
 	lower := strings.ToLower(originalSQL)
 
+	// Handle time series queries (frequency chart): detect toStartOfInterval or time-based GROUP BY
+	// with aggregation (COUNT, SUM, etc.) and group-by fields
+	if strings.Contains(lower, "tostartofinterval") || strings.Contains(lower, "toStartOfInterval") {
+		return buildLogsTimeSeriesQuery(originalSQL, lower, startMicro, endMicro)
+	}
+
 	// Handle DISTINCT queries: SELECT DISTINCT field FROM logs ...
 	if strings.Contains(lower, "distinct") {
-		// Extract the field name after DISTINCT
 		distinctRe := regexp.MustCompile(`(?i)SELECT\s+DISTINCT\s+(\w+)`)
 		if m := distinctRe.FindStringSubmatch(lower); len(m) > 1 {
 			field := m[1]
-			// Map ClickHouse log field names to O2 field names
 			o2Field := mapLogField(field)
 			sql := fmt.Sprintf(
 				`SELECT DISTINCT %s FROM "default" WHERE _timestamp >= %d AND _timestamp <= %d LIMIT 1000`,
@@ -532,8 +536,8 @@ func buildLogsQuery(originalSQL string) (string, string, string) {
 		}
 	}
 
-	// Handle COUNT queries
-	if strings.Contains(lower, "count(") {
+	// Handle COUNT queries (without time series)
+	if strings.Contains(lower, "count(") && !strings.Contains(lower, "group") {
 		sql := fmt.Sprintf(
 			`SELECT COUNT(*) as "count" FROM "default" WHERE _timestamp >= %d AND _timestamp <= %d`,
 			startMicro, endMicro,
@@ -542,15 +546,172 @@ func buildLogsQuery(originalSQL string) (string, string, string) {
 	}
 
 	// Handle simple list queries: return raw log data
-	// Select ALL fields so the adapter can restructure them into the
-	// nested format (attributes_string, resources_string, etc.) that
-	// the SigNoz frontend expects for log detail views.
 	sql := fmt.Sprintf(
 		`SELECT * FROM "default" WHERE _timestamp >= %d AND _timestamp <= %d `+
 			`ORDER BY _timestamp DESC LIMIT 100`,
 		startMicro, endMicro,
 	)
 	return "default", "logs", sql
+}
+
+// buildLogsTimeSeriesQuery builds a native OpenObserve time series query for logs.
+// The QBv5 SQL format looks like:
+//
+//	SELECT toStartOfInterval(fromUnixTimestamp64Nano(timestamp), INTERVAL 5 SECOND) AS ts,
+//	       toString(multiIf(severity_text <> '', severity_text, NULL)) AS `__GROUP_BY_KEY_0_severity_text`,
+//	       count() AS __result_0
+//	FROM signoz_logs.distributed_logs_v2
+//	WHERE timestamp >= '...' AND ts_bucket_start >= ... AND timestamp < '...' AND ts_bucket_start <= ...
+//	GROUP BY ts, `__GROUP_BY_KEY_0_severity_text`
+func buildLogsTimeSeriesQuery(originalSQL, lower string, startMicro, endMicro int64) (string, string, string) {
+	// Extract step interval from toStartOfInterval(..., INTERVAL N SECOND/MINUTE)
+	stepSeconds := int64(5) // default 5 seconds
+	intervalRe := regexp.MustCompile(`(?i)INTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY)`)
+	if m := intervalRe.FindStringSubmatch(originalSQL); len(m) >= 3 {
+		n := parseInt64(m[1])
+		switch strings.ToUpper(m[2]) {
+		case "SECOND":
+			stepSeconds = n
+		case "MINUTE":
+			stepSeconds = n * 60
+		case "HOUR":
+			stepSeconds = n * 3600
+		case "DAY":
+			stepSeconds = n * 86400
+		}
+	}
+	stepMicro := stepSeconds * 1_000_000
+
+	// Time bucket expression for OpenObserve
+	timeBucketExpr := fmt.Sprintf("FLOOR(_timestamp / %d) * %d", stepMicro, stepMicro)
+
+	// Extract non-time group-by fields from backtick-quoted aliases:
+	// Pattern: <expression> AS `__GROUP_BY_KEY_0_<field>`
+	aliasRe := regexp.MustCompile("(?i)AS\\s+`(__group_by_key_\\d+_(\\w+))`")
+	aliasMatches := aliasRe.FindAllStringSubmatch(originalSQL, -1)
+
+	// Also try unquoted aliases: AS __group_by_key_0_<field>
+	if len(aliasMatches) == 0 {
+		aliasRe = regexp.MustCompile(`(?i)AS\s+(__group_by_key_\d+_(\w+))`)
+		aliasMatches = aliasRe.FindAllStringSubmatch(originalSQL, -1)
+	}
+
+	// Extract aggregation: count() AS __result_0, COUNT(*) AS __result_0, etc.
+	aggRe := regexp.MustCompile(`(?i)(count\s*\(\s*\*?\s*\)|sum\s*\([^)]*\)|avg\s*\([^)]*\)|min\s*\([^)]*\)|max\s*\([^)]*\))\s+AS\s+` + "`?" + `(__result_\d+)` + "`?")
+	aggMatches := aggRe.FindAllStringSubmatch(originalSQL, -1)
+
+	// Build SELECT clause - use original aliases so the QBv5 pipeline can map the response
+	var selectParts []string
+	// Time bucket: use the same alias as the original SQL (usually 'ts')
+	timeBucketAlias := extractTimeBucketAlias(originalSQL)
+	if timeBucketAlias == "" {
+		timeBucketAlias = "__GROUP_BY_KEY_0"
+	}
+	selectParts = append(selectParts,
+		fmt.Sprintf("%s AS %s", timeBucketExpr, timeBucketAlias))
+
+	// Add non-time group-by fields - use original aliases
+	var nonTimeGroupBy []string
+	for _, m := range aliasMatches {
+		alias := m[1] // e.g. __GROUP_BY_KEY_0_severity_text (original alias with backticks removed)
+		field := m[2] // e.g. severity_text
+		field = mapLogFieldForQuery(field)
+		selectParts = append(selectParts, fmt.Sprintf("%s AS %s", field, alias))
+		nonTimeGroupBy = append(nonTimeGroupBy, field)
+	}
+
+	// Add aggregation selects - use original aliases (__result_N)
+	for _, m := range aggMatches {
+		agg := m[1]
+		alias := m[2]
+		// Normalize count() to COUNT(*)
+		if regexp.MustCompile(`(?i)^count\s*\(\s*\)$`).MatchString(agg) {
+			agg = "COUNT(*)"
+		}
+		selectParts = append(selectParts, fmt.Sprintf("%s AS %s", agg, alias))
+	}
+
+	// Extract WHERE filters from original SQL (excluding timestamp conditions)
+	filterClause := extractLogsFilterClause(originalSQL)
+
+	// Build WHERE clause
+	whereClause := fmt.Sprintf("_timestamp >= %d AND _timestamp <= %d", startMicro, endMicro)
+	if filterClause != "" {
+		whereClause += " AND " + filterClause
+	}
+
+	// Build GROUP BY clause using actual expressions (not aliases)
+	var groupByParts []string
+	groupByParts = append(groupByParts, timeBucketExpr)
+	groupByParts = append(groupByParts, nonTimeGroupBy...)
+
+	// ORDER BY using the original time bucket alias
+	sql := fmt.Sprintf(
+		`SELECT %s FROM "default" WHERE %s GROUP BY %s ORDER BY %s ASC`,
+		strings.Join(selectParts, ", "),
+		whereClause,
+		strings.Join(groupByParts, ", "),
+		timeBucketAlias,
+	)
+
+	return "default", "logs", sql
+}
+
+// extractTimeBucketAlias extracts the alias of the toStartOfInterval expression.
+// E.g. "toStartOfInterval(fromUnixTimestamp64Nano(timestamp), INTERVAL 5 SECOND) AS ts" → "ts"
+func extractTimeBucketAlias(sql string) string {
+	// Match toStartOfInterval(...) AS <alias>, handling one level of nested parentheses
+	// Pattern: toStartOfInterval( <stuff> ( <stuff> ) <stuff> ) AS alias
+	re := regexp.MustCompile(`(?i)toStartOfInterval\s*\((?:[^()]*|\((?:[^()]*|\([^()]*\))*\))*\)\s+AS\s+` + "`?" + `(\w+)` + "`?")
+	if m := re.FindStringSubmatch(sql); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+// mapLogFieldForQuery maps ClickHouse log field names to OpenObserve equivalents for SQL queries.
+func mapLogFieldForQuery(field string) string {
+	lower := strings.ToLower(field)
+	switch lower {
+	case "timestamp":
+		return "_timestamp"
+	case "severity_text":
+		return "severity"
+	case "severity_number":
+		return "severity"
+	default:
+		return field
+	}
+}
+
+// extractLogsFilterClause extracts non-timestamp WHERE conditions from the original SQL.
+// It looks for filter expressions after WHERE and before GROUP BY.
+func extractLogsFilterClause(originalSQL string) string {
+	// Find WHERE clause content
+	whereRe := regexp.MustCompile(`(?i)WHERE\s+(.+?)(?:\s+GROUP\s+BY|\s+ORDER\s+BY|\s+LIMIT|\s*$)`)
+	m := whereRe.FindStringSubmatch(originalSQL)
+	if len(m) < 2 {
+		return ""
+	}
+	whereContent := m[1]
+
+	// Remove timestamp and ts_bucket_start conditions
+	// Match patterns like:
+	//   timestamp >= 123, timestamp >= '123', _timestamp <= 456
+	//   ts_bucket_start >= 789, ts_bucket_start <= 101112
+	tsRe := regexp.MustCompile(`(?i)(?:AND|OR)?\s*(?:_?timestamp|ts_bucket_start)\s*(?:>=|<=|>|<|=|!=)\s*(?:'[^']*'|\d+)\s*`)
+	cleaned := tsRe.ReplaceAllString(whereContent, "")
+	// Clean up leading/trailing AND/OR
+	cleaned = regexp.MustCompile(`(?i)^\s*(AND|OR)\s+`).ReplaceAllString(cleaned, "")
+	cleaned = regexp.MustCompile(`(?i)\s+(AND|OR)\s*$`).ReplaceAllString(cleaned, "")
+	// Clean up double AND/OR
+	cleaned = regexp.MustCompile(`(?i)(AND|OR)\s+(AND|OR)`).ReplaceAllString(cleaned, "${1}")
+	cleaned = strings.TrimSpace(cleaned)
+
+	if cleaned == "" {
+		return ""
+	}
+	return cleaned
 }
 
 // mapLogField maps ClickHouse log field names to OpenObserve field names.
@@ -631,13 +792,21 @@ func (c *ooConn) handleNativeQuery(ctx context.Context, sql string) (*ooResponse
 		intentLogsQuery, intentTracesCount, intentTracesList,
 		intentDistinctFilterValues:
 
+		if intent == intentLogsQuery {
+			c.logger.InfoContext(ctx, "openobserve: intentLogsQuery original SQL", "sql_full", sql[:min(len(sql), 1500)])
+		}
+
 		stream, streamType, nativeSQL := buildNativeQuery(intent, sql)
 		if nativeSQL == "" {
 			return nil, false, nil // fall through to generic
 		}
 
-		c.logger.DebugContext(ctx, "native query",
-			"intent", string(intent), "stream", stream, "type", streamType, "sql", nativeSQL)
+		if intent == intentLogsQuery {
+			c.logger.InfoContext(ctx, "openobserve: intentLogsQuery native SQL", "native_sql", nativeSQL[:min(len(nativeSQL), 1500)])
+		}
+
+		c.logger.InfoContext(ctx, "openobserve: native query",
+			"intent", string(intent), "stream", stream, "type", streamType, "native_sql", nativeSQL)
 
 		resp, err := c.executeOpenObserveQuery(ctx, stream, streamType, nativeSQL)
 		if err != nil {
@@ -647,29 +816,57 @@ func (c *ooConn) handleNativeQuery(ctx context.Context, sql string) (*ooResponse
 		// since the response keys correspond to the native SQL aliases.
 		resp.columnOrder = extractColumnOrderFromSQL(nativeSQL)
 
-		// OpenObserve stores _timestamp in microseconds, but SigNoz expects
-		// nanoseconds for logs/traces queries. Convert the "timestamp" field
-		// from microseconds to nanoseconds.
-		if intent == intentLogsQuery || intent == intentTracesList || intent == intentTracesCount {
-			c.logger.DebugContext(ctx, "converting timestamps micro to nano", "hits_count", len(resp.Hits))
-			convertTimestampsMicroToNano(resp.Hits)
-			if len(resp.Hits) > 0 {
-				c.logger.DebugContext(ctx, "after timestamp conversion", "first_timestamp", resp.Hits[0]["timestamp"])
-			}
-		}
+		// Detect if this is a time series / aggregation query (has __GROUP_BY_KEY_ or __SELECT_KEY_ aliases)
+		isTimeSeries := strings.Contains(strings.ToLower(nativeSQL), "__group_by_key_") ||
+			strings.Contains(strings.ToLower(nativeSQL), "__select_key_")
 
-		// Restructure flat OpenObserve log rows into the nested format
-		// (attributes_string, resources_string, etc.) that SigNoz frontend expects.
-		if intent == intentLogsQuery {
-			transformLogRowsForSigNoz(resp.Hits)
-			// Update columnOrder to reflect the restructured fields
-			resp.columnOrder = []string{
-				"timestamp", "body", "severity_text", "severity_number",
-				"service_name", "trace_id", "span_id", "trace_flags",
-				"id", "scope_name", "scope_version", "scope_string",
-				"attributes_string", "attributes_number", "attributes_bool",
-				"resources_string",
+		if !isTimeSeries {
+			// Only do log row transformation for non-time-series logs queries.
+			// Time series queries have their own column structure that must be preserved.
+
+			// OpenObserve stores _timestamp in microseconds, but SigNoz expects
+			// nanoseconds for logs/traces queries. Convert the "timestamp" field
+			// from microseconds to nanoseconds.
+			if intent == intentLogsQuery || intent == intentTracesList || intent == intentTracesCount {
+				c.logger.DebugContext(ctx, "converting timestamps micro to nano", "hits_count", len(resp.Hits))
+				convertTimestampsMicroToNano(resp.Hits)
+				if len(resp.Hits) > 0 {
+					c.logger.DebugContext(ctx, "after timestamp conversion", "first_timestamp", resp.Hits[0]["timestamp"])
+				}
 			}
+
+			// Restructure flat OpenObserve log rows into the nested format
+			// (attributes_string, resources_string, etc.) that SigNoz frontend expects.
+			if intent == intentLogsQuery {
+				transformLogRowsForSigNoz(resp.Hits)
+				// Update columnOrder to reflect the restructured fields
+				resp.columnOrder = []string{
+					"timestamp", "body", "severity_text", "severity_number",
+					"service_name", "trace_id", "span_id", "trace_flags",
+					"id", "scope_name", "scope_version", "scope_string",
+					"attributes_string", "attributes_number", "attributes_bool",
+					"resources_string",
+				}
+			}
+		} else {
+			// For time series queries, the QBv5 pipeline handles timestamp conversion.
+			// OpenObserve returns _timestamp in microseconds. The pipeline expects
+			// nanosecond timestamps (ClickHouse convention) and converts to ms internally.
+			// So we multiply microsecond time buckets by 1000 to look like nanoseconds.
+			timeBucketAlias := extractTimeBucketAlias(nativeSQL)
+			if timeBucketAlias == "" {
+				timeBucketAlias = "ts"
+			}
+			for _, hit := range resp.Hits {
+				if ts, ok := hit[timeBucketAlias]; ok {
+					if tsFloat, err := toFloat64(ts); err == nil {
+						// Multiply by 1000 so the pipeline treats microseconds as nanoseconds
+						// and converts to milliseconds correctly (micro * 1000 / 1e6 = micro / 1000 = ms)
+						hit[timeBucketAlias] = int64(tsFloat * 1000)
+					}
+				}
+			}
+			c.logger.InfoContext(ctx, "openobserve: time series response", "columns", resp.columnOrder, "rows", len(resp.Hits))
 		}
 
 		return resp, true, nil
@@ -707,9 +904,9 @@ func (c *ooConn) executeOpenObserveQuery(ctx context.Context, stream, streamType
 	}
 
 	url := fmt.Sprintf("%s/api/%s/_search?type=%s", c.endpoint, c.orgID, streamType)
-	c.logger.DebugContext(ctx, "openobserve native query",
+	c.logger.InfoContext(ctx, "openobserve: executeOpenObserveQuery",
 		"url", url, "stream", stream, "type", streamType, "sql", sql,
-		"start_time", startMicro, "end_time", endMicro, "body", string(bodyBytes))
+		"start_time", startMicro, "end_time", endMicro)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -742,7 +939,7 @@ func (c *ooConn) executeOpenObserveQuery(ctx context.Context, stream, streamType
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
-	c.logger.DebugContext(ctx, "openobserve response",
+	c.logger.InfoContext(ctx, "openobserve: query response",
 		"hits_count", len(ooResp.Hits), "total", ooResp.Total, "body_preview", string(respBody)[:min(len(respBody), 500)])
 
 	return &ooResp, nil

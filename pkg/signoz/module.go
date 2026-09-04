@@ -151,7 +151,7 @@ func NewModules(
 		AuthDomain:           authDomainModule,
 		Session:              implsession.NewModule(providerSettings, authNs, userSetter, userGetter, authDomainModule, tokenizer, orgGetter, authz, config.Global),
 		SpanPercentile:       implspanpercentile.NewModule(querier, providerSettings),
-		Services:             implservices.NewModule(querier, telemetryStore),
+		Services:             implservices.NewModule(querier, telemetryStore, config.TelemetryStore.Provider),
 		MetricsExplorer:      implmetricsexplorer.NewModule(telemetryStore, telemetryMetadataStore, cache, ruleStore, dashboard, fl, providerSettings, config.MetricsExplorer),
 		MetricReductionRule:  metricReductionRule,
 		InfraMonitoring:      implinframonitoring.NewModule(telemetryStore, telemetryMetadataStore, querier, fl, providerSettings, config.InfraMonitoring),

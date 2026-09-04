@@ -120,7 +120,7 @@ func (c *ooConn) executeQuery(ctx context.Context, query string, args ...any) (*
 	// Interpolate args into query
 	sql := interpolateArgs(query, args...)
 
-	c.logger.InfoContext(ctx, "openobserve: executeQuery called", "sql_preview", sql[:min(len(sql), 300)])
+	c.logger.InfoContext(ctx, "openobserve: executeQuery called", "sql_full", sql[:min(len(sql), 500)])
 
 	// Handle SHOW CREATE TABLE specially
 	if isShowCreateTable(sql) {
@@ -180,7 +180,7 @@ func (c *ooConn) executeQuery(ctx context.Context, query string, args ...any) (*
 	}
 
 	// 6. For all other queries, determine signal type and build a basic O2 query
-	c.logger.InfoContext(ctx, "openobserve: falling through to handleGenericQuery", "sql_preview", sql[:min(len(sql), 300)])
+	c.logger.InfoContext(ctx, "openobserve: falling through to handleGenericQuery", "sql_full", sql[:min(len(sql), 500)])
 	return c.handleGenericQuery(ctx, sql, args...)
 }
 
@@ -1199,10 +1199,10 @@ func (c *ooConn) handleGenericQuery(ctx context.Context, sql string, args ...any
 	// Rewrite table references to the target stream
 	translatedSQL = rewriteTableReferences(translatedSQL, stream)
 
-	c.logger.DebugContext(ctx, "openobserve: executing generic query via translation",
+	c.logger.InfoContext(ctx, "openobserve: executing generic query via translation",
 		"stream", stream, "type", streamType,
-		"original_preview", sql[:min(len(sql), 200)],
-		"translated_preview", translatedSQL[:min(len(translatedSQL), 200)])
+		"original_sql", sql[:min(len(sql), 300)],
+		"translated_sql", translatedSQL[:min(len(translatedSQL), 300)])
 
 	resp, err := c.executeOpenObserveQuery(ctx, stream, streamType, translatedSQL)
 	if err != nil {
